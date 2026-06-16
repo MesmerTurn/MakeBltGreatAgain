@@ -71,7 +71,7 @@ Heroes can be assigned custom active and passive powers. Each power can be confi
 ### Special Powers
 | Power | Effect |
 |---|---|
-| **Phoenix Rebirth** | Hero revives after death with partial HP |
+| **Phoenix Rebirth** | Experimental — hero attempts to revive after death (actual resurrection is handled by the Resurrection system via Twitch channel points) |
 | **Shadowstep** | Hero teleports behind or away from an enemy |
 | **Teleport (Passive)** | Passive teleportation ability |
 
