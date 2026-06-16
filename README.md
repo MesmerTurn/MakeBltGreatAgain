@@ -49,7 +49,7 @@ Heroes can be assigned custom active and passive powers. Each power can be confi
 | Power | Effect |
 |---|---|
 | **Heal Aura** | Heals nearby allies over time |
-| **Damage Aura** | Boosts damage of nearby allies |
+| **Damage Aura** | Deals damage to nearby enemies |
 | **Curse Aura** | Weakens nearby enemies |
 | **Buff Aura** | Strengthens nearby allies |
 | **Fear Aura** | Causes nearby enemies to flee |
