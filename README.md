@@ -8,14 +8,14 @@ Developed by **MesmerTurn** — Bannerlord streamer on Twitch.
 | Feature | Description |
 |---|---|
 | **Resurrection** | Heroes can be resurrected by spending Twitch channel points |
-| **Formations** | Viewers can control hero troop formations via chat commands |
-| **Guard** | Assign a personal bodyguard to a hero |
-| **Rally** | Rally routed troops back into formation |
+| **Formations** | Control hero troop formations via chat commands |
+| **Follow / Defollow** | `!follow` — BLT hero runs after the streamer to protect them; `!defollow` — stops following |
+| **Guard** | `!guard` — the BLT hero's retinue follows and protects that hero |
 | **Upgrade** | Spend in-game gold to upgrade everything available in the player's clan, fiefs and kingdom (`upgradeclan`, `upgradefief`, `upgradekingdom`) |
 | **Duel** | On the battlefield, BLT hero A can command their hero to immediately charge and fight BLT hero B on the opposing side |
 | **Clan Gold** | Automatically distributes gold equally among all clan members |
 | **Grail** | Chance to trigger a quest for a legendary weapon or armor by meeting a specific condition (e.g. win 5 battles in a row) |
-| **Auras** | Passive aura skills: Poison, Berserk, Last Stand, Taunt, Heal Aura, Damage Aura |
+| **Auras** | Special passive abilities added to the game — healing, poison, and many more |
 | **Particle effects** | Visual effects on hero powers (fire on weapon, smoke on head for Demon Lord class) |
 
 ## Requirements
