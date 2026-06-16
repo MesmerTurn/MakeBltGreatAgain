@@ -16,7 +16,6 @@ Developed by **MesmerTurn** — Bannerlord streamer on Twitch.
 | **Clan Gold** | Automatically distributes gold equally among all clan members |
 | **Grail** | Chance to trigger a quest for a legendary weapon or armor by meeting a specific condition (e.g. win 5 battles in a row) |
 | **Auras** | Special passive abilities added to the game — healing, poison, and many more |
-| **Particle effects** | Visual effects on hero powers (fire on weapon, smoke on head for Demon Lord class) |
 
 ## Requirements
 
