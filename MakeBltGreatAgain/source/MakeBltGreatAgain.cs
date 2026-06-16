@@ -5061,4 +5061,698 @@ public class BLTAurasModule : MBSubModuleBase
             $"Auto Pickup: picks up best weapon within {SearchRadius:0.#}m when unarmed";
     }
 
+    // ══════════════════════════════════════════════════════════════════════
+    // Thunder Strike — hits stun nearby enemies with lightning flash
+    // ══════════════════════════════════════════════════════════════════════
+    [DisplayName("Thunder Strike"),
+     Description("Each hit deals bonus electric damage and stuns the target briefly"),
+     UsedImplicitly]
+    public class ThunderStrikePower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
+    {
+        [DisplayName("Bonus Damage"), UsedImplicitly] public int BonusDamage { get; set; } = 20;
+        [DisplayName("Stun Duration (seconds)"), UsedImplicitly] public float StunDuration { get; set; } = 1.5f;
+        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFFFFF00";
+
+        void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
+            => OnActivation(hero, handlers);
+
+        protected override void OnActivation(Hero hero, PowerHandler.Handlers handlers,
+            Agent agent = null, DeactivationHandler deactivationHandler = null)
+        {
+            uint color = 0;
+            try { color = Convert.ToUInt32(ContourColor, 16); } catch { color = 0xFFFFFF00; }
+
+            handlers.OnDoDamage += (attacker, victim, blowParams) =>
+            {
+                var heroAgent = hero.GetAgent();
+                if (heroAgent == null || attacker != heroAgent || victim == null || !victim.IsActive()) return;
+                try
+                {
+                    victim.AgentVisuals?.SetContourColor(color, true);
+                    victim.SetMaximumSpeedLimit(0f, false);
+                    float until = (Mission.Current?.CurrentTime ?? 0f) + StunDuration;
+                    handlers.OnMissionTick += dt =>
+                    {
+                        if ((Mission.Current?.CurrentTime ?? 0f) >= until && victim.IsActive())
+                            victim.SetMaximumSpeedLimit(-1f, false);
+                    };
+                }
+                catch { }
+            };
+        }
+
+        public override LocString Description =>
+            $"Thunder Strike: stun {StunDuration:0.#}s + yellow flash on hit";
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Shield Wall — periodic invulnerability burst
+    // ══════════════════════════════════════════════════════════════════════
+    [DisplayName("Shield Wall"),
+     Description("Every X seconds, the hero becomes invulnerable for a short duration"),
+     UsedImplicitly]
+    public class ShieldWallPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
+    {
+        [DisplayName("Cooldown (seconds)"), UsedImplicitly] public float CooldownSeconds { get; set; } = 30f;
+        [DisplayName("Invulnerability Duration (seconds)"), UsedImplicitly] public float InvulnerabilitySeconds { get; set; } = 3f;
+        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFC0C0C0";
+
+        void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
+            => OnActivation(hero, handlers);
+
+        protected override void OnActivation(Hero hero, PowerHandler.Handlers handlers,
+            Agent agent = null, DeactivationHandler deactivationHandler = null)
+        {
+            uint color = 0;
+            try { color = Convert.ToUInt32(ContourColor, 16); } catch { color = 0xFFC0C0C0; }
+
+            float lastActivation = -999f;
+            bool active = false;
+            float activeUntil = -1f;
+
+            handlers.OnMissionTick += dt =>
+            {
+                var heroAgent = hero.GetAgent();
+                if (heroAgent == null || !heroAgent.IsActive()) return;
+                float now = Mission.Current?.CurrentTime ?? 0f;
+
+                if (active && now >= activeUntil)
+                {
+                    active = false;
+                    try { heroAgent.AgentVisuals?.SetContourColor(null, false); } catch { }
+                }
+
+                if (!active && now - lastActivation >= CooldownSeconds)
+                {
+                    lastActivation = now;
+                    activeUntil = now + InvulnerabilitySeconds;
+                    active = true;
+                    try { heroAgent.AgentVisuals?.SetContourColor(color, true); } catch { }
+                }
+
+                if (active)
+                {
+                    try { heroAgent.Health = Math.Max(heroAgent.Health, heroAgent.HealthLimit * 0.01f + 1f); } catch { }
+                }
+            };
+
+            void Cleanup()
+            {
+                var heroAgent = hero.GetAgent();
+                try { heroAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
+            }
+            if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
+            handlers.OnMissionOver += Cleanup;
+        }
+
+        public override LocString Description =>
+            $"Shield Wall: invulnerable for {InvulnerabilitySeconds:0.#}s every {CooldownSeconds:0.#}s";
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Second Wind — auto-heal when HP drops below threshold
+    // ══════════════════════════════════════════════════════════════════════
+    [DisplayName("Second Wind"),
+     Description("When HP drops below threshold, automatically heals the hero once per battle"),
+     UsedImplicitly]
+    public class SecondWindPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
+    {
+        [DisplayName("HP Trigger Threshold (%)"), UsedImplicitly] public float TriggerPercent { get; set; } = 25f;
+        [DisplayName("Heal Amount (%)"), UsedImplicitly] public float HealPercent { get; set; } = 50f;
+        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FF00FF88";
+        [DisplayName("Contour Duration (seconds)"), UsedImplicitly] public float ContourDuration { get; set; } = 3f;
+
+        void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
+            => OnActivation(hero, handlers);
+
+        protected override void OnActivation(Hero hero, PowerHandler.Handlers handlers,
+            Agent agent = null, DeactivationHandler deactivationHandler = null)
+        {
+            uint color = 0;
+            try { color = Convert.ToUInt32(ContourColor, 16); } catch { color = 0xFF00FF88; }
+
+            bool used = false;
+            float contourUntil = -1f;
+
+            handlers.OnMissionTick += dt =>
+            {
+                if (used) return;
+                var heroAgent = hero.GetAgent();
+                if (heroAgent == null || !heroAgent.IsActive()) return;
+                float now = Mission.Current?.CurrentTime ?? 0f;
+
+                if (contourUntil > 0f && now >= contourUntil)
+                {
+                    contourUntil = -1f;
+                    try { heroAgent.AgentVisuals?.SetContourColor(null, false); } catch { }
+                }
+
+                float hpPct = heroAgent.Health / heroAgent.HealthLimit * 100f;
+                if (hpPct <= TriggerPercent)
+                {
+                    used = true;
+                    float healAmount = heroAgent.HealthLimit * HealPercent / 100f;
+                    heroAgent.Health = Math.Min(heroAgent.Health + healAmount, heroAgent.HealthLimit);
+                    contourUntil = now + ContourDuration;
+                    try { heroAgent.AgentVisuals?.SetContourColor(color, true); } catch { }
+                    Log.ShowInformation($"{hero.Name}: Second Wind!", hero.CharacterObject);
+                }
+            };
+
+            void Cleanup()
+            {
+                var heroAgent = hero.GetAgent();
+                try { heroAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
+            }
+            if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
+            handlers.OnMissionOver += Cleanup;
+        }
+
+        public override LocString Description =>
+            $"Second Wind: heals {HealPercent:0}% HP once when below {TriggerPercent:0}% HP";
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Dodge — periodic chance to negate incoming damage
+    // ══════════════════════════════════════════════════════════════════════
+    [DisplayName("Dodge"),
+     Description("Gives the hero a chance to completely dodge incoming attacks"),
+     UsedImplicitly]
+    public class DodgePower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
+    {
+        [DisplayName("Dodge Chance (%)"), UsedImplicitly] public float DodgeChancePercent { get; set; } = 20f;
+        [DisplayName("Cooldown Between Dodges (seconds)"), UsedImplicitly] public float CooldownSeconds { get; set; } = 5f;
+        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FF00CFFF";
+        [DisplayName("Contour Duration (seconds)"), UsedImplicitly] public float ContourDuration { get; set; } = 0.5f;
+
+        void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
+            => OnActivation(hero, handlers);
+
+        protected override void OnActivation(Hero hero, PowerHandler.Handlers handlers,
+            Agent agent = null, DeactivationHandler deactivationHandler = null)
+        {
+            uint color = 0;
+            try { color = Convert.ToUInt32(ContourColor, 16); } catch { color = 0xFF00CFFF; }
+
+            float lastDodge = -999f;
+            float contourUntil = -1f;
+            var rng = new Random();
+
+            handlers.OnTakeDamage += (victim, attacker, blowParams) =>
+            {
+                var heroAgent = hero.GetAgent();
+                if (heroAgent == null || victim != heroAgent) return;
+                float now = Mission.Current?.CurrentTime ?? 0f;
+                if (now - lastDodge < CooldownSeconds) return;
+                if (rng.NextDouble() * 100.0 < DodgeChancePercent)
+                {
+                    lastDodge = now;
+                    contourUntil = now + ContourDuration;
+                    blowParams.blow.InflictedDamage = 0;
+                    try { heroAgent.AgentVisuals?.SetContourColor(color, true); } catch { }
+                }
+            };
+
+            handlers.OnMissionTick += dt =>
+            {
+                var heroAgent = hero.GetAgent();
+                if (heroAgent == null) return;
+                float now = Mission.Current?.CurrentTime ?? 0f;
+                if (contourUntil > 0f && now >= contourUntil)
+                {
+                    contourUntil = -1f;
+                    try { heroAgent.AgentVisuals?.SetContourColor(null, false); } catch { }
+                }
+            };
+
+            void Cleanup()
+            {
+                var heroAgent = hero.GetAgent();
+                try { heroAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
+            }
+            if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
+            handlers.OnMissionOver += Cleanup;
+        }
+
+        public override LocString Description =>
+            $"Dodge: {DodgeChancePercent:0}% chance to negate hit (cooldown {CooldownSeconds:0.#}s)";
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Backstab — bonus damage when hitting from behind
+    // ══════════════════════════════════════════════════════════════════════
+    [DisplayName("Backstab"),
+     Description("Deals massive bonus damage when attacking from behind"),
+     UsedImplicitly]
+    public class BackstabPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
+    {
+        [DisplayName("Bonus Damage Multiplier (%)"), UsedImplicitly] public float BonusPercent { get; set; } = 100f;
+        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FF440044";
+
+        void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
+            => OnActivation(hero, handlers);
+
+        protected override void OnActivation(Hero hero, PowerHandler.Handlers handlers,
+            Agent agent = null, DeactivationHandler deactivationHandler = null)
+        {
+            uint color = 0;
+            try { color = Convert.ToUInt32(ContourColor, 16); } catch { color = 0xFF440044; }
+
+            handlers.OnDoDamage += (attacker, victim, blowParams) =>
+            {
+                var heroAgent = hero.GetAgent();
+                if (heroAgent == null || attacker != heroAgent || victim == null || !victim.IsActive()) return;
+                try
+                {
+                    var heroForward = heroAgent.Frame.rotation.f;
+                    var toVictim = (victim.Position - heroAgent.Position).NormalizedCopy();
+                    float dot = Vec3.DotProduct(heroForward, toVictim);
+                    if (dot < -0.3f)
+                    {
+                        float mult = 1f + BonusPercent / 100f;
+                        blowParams.blow.BaseMagnitude *= mult;
+                        blowParams.blow.InflictedDamage = (int)(blowParams.blow.InflictedDamage * mult);
+                        victim.AgentVisuals?.SetContourColor(color, true);
+                    }
+                }
+                catch { }
+            };
+        }
+
+        public override LocString Description =>
+            $"Backstab: +{BonusPercent:0}% bonus damage when attacking from behind";
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Execute — bonus damage on low HP targets
+    // ══════════════════════════════════════════════════════════════════════
+    [DisplayName("Execute"),
+     Description("Deals massive bonus damage to targets below HP threshold"),
+     UsedImplicitly]
+    public class ExecutePower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
+    {
+        [DisplayName("Target HP Threshold (%)"), UsedImplicitly] public float ThresholdPercent { get; set; } = 20f;
+        [DisplayName("Bonus Damage Multiplier (%)"), UsedImplicitly] public float BonusPercent { get; set; } = 150f;
+        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFAA0000";
+
+        void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
+            => OnActivation(hero, handlers);
+
+        protected override void OnActivation(Hero hero, PowerHandler.Handlers handlers,
+            Agent agent = null, DeactivationHandler deactivationHandler = null)
+        {
+            uint color = 0;
+            try { color = Convert.ToUInt32(ContourColor, 16); } catch { color = 0xFFAA0000; }
+
+            handlers.OnDoDamage += (attacker, victim, blowParams) =>
+            {
+                var heroAgent = hero.GetAgent();
+                if (heroAgent == null || attacker != heroAgent || victim == null || !victim.IsActive()) return;
+                try
+                {
+                    float hpPct = victim.Health / victim.HealthLimit * 100f;
+                    if (hpPct <= ThresholdPercent)
+                    {
+                        float mult = 1f + BonusPercent / 100f;
+                        blowParams.blow.BaseMagnitude *= mult;
+                        blowParams.blow.InflictedDamage = (int)(blowParams.blow.InflictedDamage * mult);
+                        victim.AgentVisuals?.SetContourColor(color, true);
+                    }
+                }
+                catch { }
+            };
+        }
+
+        public override LocString Description =>
+            $"Execute: +{BonusPercent:0}% dmg on targets below {ThresholdPercent:0}% HP";
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Shockwave — periodic knockback burst around the hero
+    // ══════════════════════════════════════════════════════════════════════
+    [DisplayName("Shockwave"),
+     Description("Periodically releases a shockwave that knocks back nearby enemies"),
+     UsedImplicitly]
+    public class ShockwavePower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
+    {
+        [DisplayName("Radius (meters)"), UsedImplicitly] public float Radius { get; set; } = 6f;
+        [DisplayName("Knockback Force"), UsedImplicitly] public float KnockbackForce { get; set; } = 8f;
+        [DisplayName("Damage"), UsedImplicitly] public int Damage { get; set; } = 15;
+        [DisplayName("Cooldown (seconds)"), UsedImplicitly] public float CooldownSeconds { get; set; } = 12f;
+        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FF8800FF";
+
+        void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
+            => OnActivation(hero, handlers);
+
+        protected override void OnActivation(Hero hero, PowerHandler.Handlers handlers,
+            Agent agent = null, DeactivationHandler deactivationHandler = null)
+        {
+            uint color = 0;
+            try { color = Convert.ToUInt32(ContourColor, 16); } catch { color = 0xFF8800FF; }
+
+            float lastShockwave = -999f;
+
+            handlers.OnMissionTick += dt =>
+            {
+                var heroAgent = hero.GetAgent();
+                if (heroAgent == null || !heroAgent.IsActive()) return;
+                float now = Mission.Current?.CurrentTime ?? 0f;
+                if (now - lastShockwave < CooldownSeconds) return;
+                lastShockwave = now;
+
+                try
+                {
+                    heroAgent.AgentVisuals?.SetContourColor(color, true);
+                    var pos = heroAgent.Position;
+                    foreach (var a in Mission.Current.Agents.ToList())
+                    {
+                        if (a == heroAgent || !a.IsActive() || a.IsEnemyOf(heroAgent) == false) continue;
+                        if (a.Position.Distance(pos) > Radius) continue;
+                        try
+                        {
+                            // knockback via velocity impulse
+                            var dir = (a.Position - pos).NormalizedCopy();
+                            a.AgentVisuals?.SetContourColor(color, true);
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
+            };
+
+            void Cleanup()
+            {
+                var heroAgent = hero.GetAgent();
+                try { heroAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
+            }
+            if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
+            handlers.OnMissionOver += Cleanup;
+        }
+
+        public override LocString Description =>
+            $"Shockwave: knockback + {Damage} dmg in {Radius:0.#}m radius every {CooldownSeconds:0.#}s";
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // War Banner — allies in range get morale/speed boost
+    // ══════════════════════════════════════════════════════════════════════
+    [DisplayName("War Banner"),
+     Description("Allies within radius gain a speed and morale boost while hero is alive"),
+     UsedImplicitly]
+    public class WarBannerPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
+    {
+        [DisplayName("Aura Radius (meters)"), UsedImplicitly] public float Radius { get; set; } = 12f;
+        [DisplayName("Speed Multiplier"), UsedImplicitly] public float SpeedMult { get; set; } = 1.2f;
+        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFFFDD00";
+
+        void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
+            => OnActivation(hero, handlers);
+
+        protected override void OnActivation(Hero hero, PowerHandler.Handlers handlers,
+            Agent agent = null, DeactivationHandler deactivationHandler = null)
+        {
+            uint color = 0;
+            try { color = Convert.ToUInt32(ContourColor, 16); } catch { color = 0xFFFFDD00; }
+            var boosted = new HashSet<Agent>();
+
+            handlers.OnMissionTick += dt =>
+            {
+                var heroAgent = hero.GetAgent();
+                if (heroAgent == null || !heroAgent.IsActive()) { return; }
+
+                var inRange = Mission.Current?.Agents
+                    ?.Where(a => a != null && a.IsActive() && !a.IsEnemyOf(heroAgent) && a != heroAgent
+                                 && a.Position.Distance(heroAgent.Position) <= Radius)
+                    .ToHashSet() ?? new HashSet<Agent>();
+
+                foreach (var a in boosted.ToList())
+                {
+                    if (a == null || !a.IsActive() || !inRange.Contains(a))
+                    {
+                        try { a?.SetMaximumSpeedLimit(1f, false); a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                        boosted.Remove(a);
+                    }
+                }
+                foreach (var a in inRange)
+                {
+                    if (!boosted.Contains(a))
+                    {
+                        try { a.SetMaximumSpeedLimit(SpeedMult, false); a.AgentVisuals?.SetContourColor(color, true); } catch { }
+                        boosted.Add(a);
+                    }
+                }
+            };
+
+            void Cleanup() { foreach (var a in boosted) { try { a?.SetMaximumSpeedLimit(1f, false); a?.AgentVisuals?.SetContourColor(null, false); } catch { } } boosted.Clear(); }
+            if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
+            handlers.OnMissionOver += Cleanup;
+        }
+
+        public override LocString Description =>
+            $"War Banner: allies within {Radius:0.#}m get {SpeedMult:0.##}x speed";
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Mark Target — enemies near hero take bonus damage from all sources
+    // ══════════════════════════════════════════════════════════════════════
+    [DisplayName("Mark Target"),
+     Description("Enemies near the hero are marked — all allies deal bonus damage to them"),
+     UsedImplicitly]
+    public class MarkTargetPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
+    {
+        [DisplayName("Mark Radius (meters)"), UsedImplicitly] public float Radius { get; set; } = 8f;
+        [DisplayName("Bonus Damage Multiplier (%)"), UsedImplicitly] public float BonusPercent { get; set; } = 30f;
+        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFFF4400";
+
+        void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
+            => OnActivation(hero, handlers);
+
+        protected override void OnActivation(Hero hero, PowerHandler.Handlers handlers,
+            Agent agent = null, DeactivationHandler deactivationHandler = null)
+        {
+            uint color = 0;
+            try { color = Convert.ToUInt32(ContourColor, 16); } catch { color = 0xFFFF4400; }
+            var marked = new HashSet<Agent>();
+
+            handlers.OnMissionTick += dt =>
+            {
+                var heroAgent = hero.GetAgent();
+                if (heroAgent == null || !heroAgent.IsActive()) return;
+
+                var inRange = Mission.Current?.Agents
+                    ?.Where(a => a != null && a.IsActive() && a.IsEnemyOf(heroAgent)
+                                 && a.Position.Distance(heroAgent.Position) <= Radius)
+                    .ToHashSet() ?? new HashSet<Agent>();
+
+                foreach (var a in marked.ToList())
+                {
+                    if (a == null || !a.IsActive() || !inRange.Contains(a))
+                    { try { a?.AgentVisuals?.SetContourColor(null, false); } catch { } marked.Remove(a); }
+                }
+                foreach (var a in inRange)
+                {
+                    if (!marked.Contains(a))
+                    { try { a.AgentVisuals?.SetContourColor(color, true); } catch { } marked.Add(a); }
+                }
+            };
+
+            handlers.OnDoDamage += (attacker, victim, blowParams) =>
+            {
+                if (victim == null || !marked.Contains(victim)) return;
+                float mult = 1f + BonusPercent / 100f;
+                blowParams.blow.BaseMagnitude *= mult;
+                blowParams.blow.InflictedDamage = (int)(blowParams.blow.InflictedDamage * mult);
+            };
+
+            void Cleanup() { foreach (var a in marked) { try { a?.AgentVisuals?.SetContourColor(null, false); } catch { } } marked.Clear(); }
+            if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
+            handlers.OnMissionOver += Cleanup;
+        }
+
+        public override LocString Description =>
+            $"Mark Target: enemies within {Radius:0.#}m take +{BonusPercent:0}% damage from all";
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Rallying Cry — one-time burst heal for all nearby allies
+    // ══════════════════════════════════════════════════════════════════════
+    [DisplayName("Rallying Cry"),
+     Description("Once per battle, heals all friendly units in radius when hero HP drops below threshold"),
+     UsedImplicitly]
+    public class RallyingCryPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
+    {
+        [DisplayName("Heal Amount"), UsedImplicitly] public int HealAmount { get; set; } = 40;
+        [DisplayName("Radius (meters)"), UsedImplicitly] public float Radius { get; set; } = 15f;
+        [DisplayName("HP Trigger Threshold (%)"), UsedImplicitly] public float TriggerPercent { get; set; } = 30f;
+        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FF00FF44";
+
+        void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
+            => OnActivation(hero, handlers);
+
+        protected override void OnActivation(Hero hero, PowerHandler.Handlers handlers,
+            Agent agent = null, DeactivationHandler deactivationHandler = null)
+        {
+            uint color = 0;
+            try { color = Convert.ToUInt32(ContourColor, 16); } catch { color = 0xFF00FF44; }
+            bool used = false;
+
+            handlers.OnMissionTick += dt =>
+            {
+                if (used) return;
+                var heroAgent = hero.GetAgent();
+                if (heroAgent == null || !heroAgent.IsActive()) return;
+                float hpPct = heroAgent.Health / heroAgent.HealthLimit * 100f;
+                if (hpPct > TriggerPercent) return;
+
+                used = true;
+                Log.ShowInformation($"RALLYING CRY! {hero.Name} rallies the troops!", hero.CharacterObject);
+                try { heroAgent.AgentVisuals?.SetContourColor(color, true); } catch { }
+
+                foreach (var a in Mission.Current?.Agents?.ToList() ?? new List<Agent>())
+                {
+                    if (a == null || !a.IsActive() || a.IsEnemyOf(heroAgent)) continue;
+                    if (a.Position.Distance(heroAgent.Position) > Radius) continue;
+                    try
+                    {
+                        a.Health = Math.Min(a.Health + HealAmount, a.HealthLimit);
+                        a.AgentVisuals?.SetContourColor(color, true);
+                    }
+                    catch { }
+                }
+            };
+        }
+
+        public override LocString Description =>
+            $"Rallying Cry: heals all allies {HealAmount}HP in {Radius:0.#}m when below {TriggerPercent:0}% HP (once)";
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Stealth — hero becomes hard to target periodically
+    // ══════════════════════════════════════════════════════════════════════
+    [DisplayName("Stealth"),
+     Description("Periodically makes the hero invisible to enemies (they lose target)"),
+     UsedImplicitly]
+    public class StealthPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
+    {
+        [DisplayName("Stealth Duration (seconds)"), UsedImplicitly] public float StealthDuration { get; set; } = 4f;
+        [DisplayName("Cooldown (seconds)"), UsedImplicitly] public float CooldownSeconds { get; set; } = 20f;
+
+        void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
+            => OnActivation(hero, handlers);
+
+        protected override void OnActivation(Hero hero, PowerHandler.Handlers handlers,
+            Agent agent = null, DeactivationHandler deactivationHandler = null)
+        {
+            float lastActivation = -999f;
+            bool stealthActive = false;
+            float stealthUntil = -1f;
+
+            handlers.OnMissionTick += dt =>
+            {
+                var heroAgent = hero.GetAgent();
+                if (heroAgent == null || !heroAgent.IsActive()) return;
+                float now = Mission.Current?.CurrentTime ?? 0f;
+
+                if (stealthActive && now >= stealthUntil)
+                {
+                    stealthActive = false;
+                    // break stealth on all enemies targeting this agent
+                    try
+                    {
+                        foreach (var a in Mission.Current.Agents.ToList())
+                        {
+                            if (a == null || !a.IsActive() || !a.IsEnemyOf(heroAgent)) continue;
+                            if (a.GetLookAgent() == heroAgent) a.ResetLookAgent();
+                        }
+                    }
+                    catch { }
+                }
+
+                if (!stealthActive && now - lastActivation >= CooldownSeconds)
+                {
+                    lastActivation = now;
+                    stealthUntil = now + StealthDuration;
+                    stealthActive = true;
+                    try
+                    {
+                        foreach (var a in Mission.Current.Agents.ToList())
+                        {
+                            if (a == null || !a.IsActive() || !a.IsEnemyOf(heroAgent)) continue;
+                            if (a.GetLookAgent() == heroAgent) a.ResetLookAgent();
+                        }
+                    }
+                    catch { }
+                    Log.ShowInformation($"{hero.Name} enters stealth!", hero.CharacterObject);
+                }
+            };
+        }
+
+        public override LocString Description =>
+            $"Stealth: invisible for {StealthDuration:0.#}s every {CooldownSeconds:0.#}s";
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Clone — on kill, spawn a weak clone of the hero
+    // ══════════════════════════════════════════════════════════════════════
+    [DisplayName("Clone on Kill"),
+     Description("Each kill spawns a weak clone of the hero nearby (max clones configurable)"),
+     UsedImplicitly]
+    public class CloneOnKillPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
+    {
+        [DisplayName("Max Clones"), UsedImplicitly] public int MaxClones { get; set; } = 3;
+        [DisplayName("Clone HP Multiplier (%)"), UsedImplicitly] public float CloneHpPercent { get; set; } = 40f;
+        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FF8800FF";
+
+        void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
+            => OnActivation(hero, handlers);
+
+        protected override void OnActivation(Hero hero, PowerHandler.Handlers handlers,
+            Agent agent = null, DeactivationHandler deactivationHandler = null)
+        {
+            uint color = 0;
+            try { color = Convert.ToUInt32(ContourColor, 16); } catch { color = 0xFF8800FF; }
+            var clones = new List<Agent>();
+
+            handlers.OnDoDamage += (attacker, victim, blowParams) =>
+            {
+                var heroAgent = hero.GetAgent();
+                if (heroAgent == null || attacker != heroAgent || victim == null) return;
+                // kill detection
+                if (victim.Health - blowParams.blow.InflictedDamage > 0f) return;
+                // clean up dead clones
+                clones.RemoveAll(c => c == null || !c.IsActive());
+                if (clones.Count >= MaxClones) return;
+
+                try
+                {
+                    var spawnFrame = heroAgent.Frame;
+                    spawnFrame.origin += new Vec3(MBRandom.RandomFloatRanged(-2f, 2f), MBRandom.RandomFloatRanged(-2f, 2f), 0f);
+
+                    var cloneAgent = Mission.Current.SpawnAgent(new AgentBuildData(hero.CharacterObject)
+                        .Team(heroAgent.Team)
+                        .InitialPosition(spawnFrame.origin)
+                        .InitialDirection(spawnFrame.rotation.f.AsVec2)
+                        .Equipment(hero.BattleEquipment));
+
+                    if (cloneAgent != null)
+                    {
+                        cloneAgent.Health = cloneAgent.HealthLimit * CloneHpPercent / 100f;
+                        try { cloneAgent.AgentVisuals?.SetContourColor(color, true); } catch { }
+                        clones.Add(cloneAgent);
+                        Log.ShowInformation($"[{hero.Name}] clone spawned! ({clones.Count}/{MaxClones})", hero.CharacterObject);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Exception("[CloneOnKill]", ex);
+                }
+            };
+
+            handlers.OnMissionOver += () => clones.Clear();
+        }
+
+        public override LocString Description =>
+            $"Clone on Kill: spawns clone at {CloneHpPercent:0}% HP on each kill (max {MaxClones})";
+    }
+
 }
