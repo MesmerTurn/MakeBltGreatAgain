@@ -7,7 +7,7 @@ Developed by **MesmerTurn** — Bannerlord streamer on Twitch.
 
 | Feature | Description |
 |---|---|
-| **Resurrection** | Heroes can be resurrected by spending Twitch channel points |
+| **Resurrection** | Resurrects a permanently dead BLT hero by spending Twitch channel points (battle deaths are handled by summon/attack redeems) |
 | **Formations** | Control hero troop formations via chat commands |
 | **Follow / Defollow** | `!follow` — BLT hero runs after the streamer to protect them; `!defollow` — stops following |
 | **Guard** | `!guard` — the BLT hero's retinue follows and protects that hero |
@@ -71,7 +71,6 @@ Heroes can be assigned custom active and passive powers. Each power can be confi
 ### Special Powers
 | Power | Effect |
 |---|---|
-| **Phoenix Rebirth** | Experimental — hero attempts to revive after death (actual resurrection is handled by the Resurrection system via Twitch channel points) |
 | **Shadowstep** | Hero teleports behind or away from an enemy |
 | **Teleport (Passive)** | Passive teleportation ability |
 
