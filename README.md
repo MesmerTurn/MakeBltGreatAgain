@@ -19,9 +19,9 @@ Developed by **MesmerTurn** — Bannerlord streamer on Twitch.
 
 ## Requirements
 
-- Mount & Blade II: Bannerlord
-- [BannerlordTwitch (BLT) 5.2.4](https://www.nexusmods.com/mountandblade2bannerlord/mods/981)
-- [BLT Adopt a Hero](https://www.nexusmods.com/mountandblade2bannerlord/mods/1091)
+- Mount & Blade II: Bannerlord **1.3.15**
+- [BannerlordTwitch (BLT) 5.2.4](https://github.com/Randomchair22/Bannerlord-Twitch)
+- BLT Adopt a Hero (included in the BLT repo above)
 
 ## Installation
 
