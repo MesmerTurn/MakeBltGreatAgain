@@ -29,6 +29,54 @@ Developed by **MesmerTurn** — Bannerlord streamer on Twitch.
 2. Extract to your Bannerlord `Modules/` folder
 3. Enable the mod in the Bannerlord launcher (load after BLT and BLTAdoptAHero)
 
+## Power System
+
+Heroes can be assigned custom active and passive powers. Each power can be configured with duration, stacks, particle effects and contour color. Available powers:
+
+### Strike Powers (active)
+| Power | Effect |
+|---|---|
+| **Poison Strike** | Hit poisons the target, dealing damage over time |
+| **Burning Strike** | Hit ignites the target |
+| **Frost Strike** | Hit slows and chills the target |
+| **Vampirism Strike** | Hit heals the attacker for a portion of damage dealt |
+| **Chain Lightning** | Hit sends electricity jumping to nearby enemies |
+| **Bleed Strike** | Hit causes bleeding damage over time |
+| **Jump Attack** | Hero leaps toward a target and strikes |
+| **Kick** | Knocks back the target on hit |
+
+### Aura Powers (passive, affect nearby units)
+| Power | Effect |
+|---|---|
+| **Heal Aura** | Heals nearby allies over time |
+| **Damage Aura** | Boosts damage of nearby allies |
+| **Curse Aura** | Weakens nearby enemies |
+| **Buff Aura** | Strengthens nearby allies |
+| **Fear Aura** | Causes nearby enemies to flee |
+| **Slow Aura** | Slows movement of nearby enemies |
+| **Weakness Aura** | Reduces armor/damage of nearby enemies |
+| **Battle Cry Aura** | Boosts morale of nearby allies |
+| **Commanding Aura** | Powerful aura reward — redeemable via Twitch channel points |
+
+### Survival Powers (passive)
+| Power | Effect |
+|---|---|
+| **Berserk** | Increases damage as HP drops lower |
+| **Last Stand** | Grants a powerful bonus when near death |
+| **Blood Rage** | Stacks bonus damage with each kill |
+| **Vengeance** | Returns a portion of received damage back to the attacker |
+| **Absorb Health** | Absorbs incoming damage and converts it to health |
+| **Taunt** | Forces nearby enemies to focus attacks on this hero |
+
+### Special Powers
+| Power | Effect |
+|---|---|
+| **Phoenix Rebirth** | Hero revives after death with partial HP |
+| **Shadowstep** | Hero teleports behind or away from an enemy |
+| **Teleport (Passive)** | Passive teleportation ability |
+
+All powers support: **duration**, **stack count**, **particle effects** (visual FX) and **contour color** (hero glow color in battle).
+
 ## Releases
 
 | Version | Changes |
