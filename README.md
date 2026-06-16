@@ -68,11 +68,20 @@ Heroes can be assigned custom active and passive powers. Each power can be confi
 | **Absorb Health** | Absorbs incoming damage and converts it to health |
 | **Taunt** | Forces nearby enemies to focus attacks on this hero |
 
+### Support Powers
+| Power | Effect |
+|---|---|
+| **War Banner** | Allies within radius get a speed boost while hero is alive |
+| **Mark Target** | Enemies near hero are marked — all allies deal bonus damage to them |
+| **Rallying Cry** | One-time burst heal for all nearby allies when hero HP drops below threshold |
+
 ### Special Powers
 | Power | Effect |
 |---|---|
-| **Shadowstep** | Hero teleports behind or away from an enemy |
+| **Shadowstep** | Periodically teleports hero behind the nearest enemy |
 | **Teleport (Passive)** | Passive teleportation ability |
+| **Stealth** | Periodically makes hero untargetable — enemies lose their target |
+| **Clone on Kill** | Each kill spawns a weak clone of the hero nearby (max clones configurable) |
 
 All powers support: **duration**, **stack count**, **particle effects** (visual FX) and **contour color** (hero glow color in battle).
 
