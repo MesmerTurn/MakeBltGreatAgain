@@ -1,7 +1,20 @@
 # MakeBltGreatAgain
 
 A mod collection for **Mount & Blade II: Bannerlord** built on top of [BannerlordTwitch (BLT) 5.2.4](https://www.nexusmods.com/mountandblade2bannerlord/mods/981).  
-Developed by **MesmerTurn** — Bannerlord streamer on Twitch.
+Developed by **MesmerTurn**.
+
+---
+
+## Credits & Thanks
+
+- **Doravaro** — the streamer who first showed me BLT and sparked the idea for all of this
+- **GeneralEddy** — for showing that there's so much more that can be done with BLT
+- **Special thanks to:**
+  - **kanboru** — for the support and inspiration
+  - **Randomchair22** — for maintaining BLT 5.2.4 and keeping it alive
+  - **billw** — the original creator who breathed life into BLT
+
+---
 
 ## What this mod adds
 
