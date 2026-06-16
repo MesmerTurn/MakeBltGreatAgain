@@ -5071,6 +5071,7 @@ public class BLTAurasModule : MBSubModuleBase
     {
         [DisplayName("Bonus Damage"), UsedImplicitly] public int BonusDamage { get; set; } = 20;
         [DisplayName("Stun Duration (seconds)"), UsedImplicitly] public float StunDuration { get; set; } = 1.5f;
+        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
         [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFFFFF00";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
@@ -5088,7 +5089,7 @@ public class BLTAurasModule : MBSubModuleBase
                 if (heroAgent == null || attacker != heroAgent || victim == null || !victim.IsActive()) return;
                 try
                 {
-                    victim.AgentVisuals?.SetContourColor(color, true);
+                    if (ShowContour) victim.AgentVisuals?.SetContourColor(color, true);
                     victim.SetMaximumSpeedLimit(0f, false);
                     float until = (Mission.Current?.CurrentTime ?? 0f) + StunDuration;
                     handlers.OnMissionTick += dt =>
@@ -5115,6 +5116,7 @@ public class BLTAurasModule : MBSubModuleBase
     {
         [DisplayName("Cooldown (seconds)"), UsedImplicitly] public float CooldownSeconds { get; set; } = 30f;
         [DisplayName("Invulnerability Duration (seconds)"), UsedImplicitly] public float InvulnerabilitySeconds { get; set; } = 3f;
+        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
         [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFC0C0C0";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
@@ -5139,7 +5141,7 @@ public class BLTAurasModule : MBSubModuleBase
                 if (active && now >= activeUntil)
                 {
                     active = false;
-                    try { heroAgent.AgentVisuals?.SetContourColor(null, false); } catch { }
+                    if (ShowContour) try { heroAgent.AgentVisuals?.SetContourColor(null, false); } catch { }
                 }
 
                 if (!active && now - lastActivation >= CooldownSeconds)
@@ -5147,7 +5149,7 @@ public class BLTAurasModule : MBSubModuleBase
                     lastActivation = now;
                     activeUntil = now + InvulnerabilitySeconds;
                     active = true;
-                    try { heroAgent.AgentVisuals?.SetContourColor(color, true); } catch { }
+                    if (ShowContour) try { heroAgent.AgentVisuals?.SetContourColor(color, true); } catch { }
                 }
 
                 if (active)
@@ -5159,7 +5161,7 @@ public class BLTAurasModule : MBSubModuleBase
             void Cleanup()
             {
                 var heroAgent = hero.GetAgent();
-                try { heroAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                if (ShowContour) try { heroAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
             }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
             handlers.OnMissionOver += Cleanup;
@@ -5179,6 +5181,7 @@ public class BLTAurasModule : MBSubModuleBase
     {
         [DisplayName("HP Trigger Threshold (%)"), UsedImplicitly] public float TriggerPercent { get; set; } = 25f;
         [DisplayName("Heal Amount (%)"), UsedImplicitly] public float HealPercent { get; set; } = 50f;
+        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
         [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FF00FF88";
         [DisplayName("Contour Duration (seconds)"), UsedImplicitly] public float ContourDuration { get; set; } = 3f;
 
@@ -5204,7 +5207,7 @@ public class BLTAurasModule : MBSubModuleBase
                 if (contourUntil > 0f && now >= contourUntil)
                 {
                     contourUntil = -1f;
-                    try { heroAgent.AgentVisuals?.SetContourColor(null, false); } catch { }
+                    if (ShowContour) try { heroAgent.AgentVisuals?.SetContourColor(null, false); } catch { }
                 }
 
                 float hpPct = heroAgent.Health / heroAgent.HealthLimit * 100f;
@@ -5214,7 +5217,7 @@ public class BLTAurasModule : MBSubModuleBase
                     float healAmount = heroAgent.HealthLimit * HealPercent / 100f;
                     heroAgent.Health = Math.Min(heroAgent.Health + healAmount, heroAgent.HealthLimit);
                     contourUntil = now + ContourDuration;
-                    try { heroAgent.AgentVisuals?.SetContourColor(color, true); } catch { }
+                    if (ShowContour) try { heroAgent.AgentVisuals?.SetContourColor(color, true); } catch { }
                     Log.ShowInformation($"{hero.Name}: Second Wind!", hero.CharacterObject);
                 }
             };
@@ -5222,7 +5225,7 @@ public class BLTAurasModule : MBSubModuleBase
             void Cleanup()
             {
                 var heroAgent = hero.GetAgent();
-                try { heroAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                if (ShowContour) try { heroAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
             }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
             handlers.OnMissionOver += Cleanup;
@@ -5242,6 +5245,7 @@ public class BLTAurasModule : MBSubModuleBase
     {
         [DisplayName("Dodge Chance (%)"), UsedImplicitly] public float DodgeChancePercent { get; set; } = 20f;
         [DisplayName("Cooldown Between Dodges (seconds)"), UsedImplicitly] public float CooldownSeconds { get; set; } = 5f;
+        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
         [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FF00CFFF";
         [DisplayName("Contour Duration (seconds)"), UsedImplicitly] public float ContourDuration { get; set; } = 0.5f;
 
@@ -5269,7 +5273,7 @@ public class BLTAurasModule : MBSubModuleBase
                     lastDodge = now;
                     contourUntil = now + ContourDuration;
                     blowParams.blow.InflictedDamage = 0;
-                    try { heroAgent.AgentVisuals?.SetContourColor(color, true); } catch { }
+                    if (ShowContour) try { heroAgent.AgentVisuals?.SetContourColor(color, true); } catch { }
                 }
             };
 
@@ -5281,14 +5285,14 @@ public class BLTAurasModule : MBSubModuleBase
                 if (contourUntil > 0f && now >= contourUntil)
                 {
                     contourUntil = -1f;
-                    try { heroAgent.AgentVisuals?.SetContourColor(null, false); } catch { }
+                    if (ShowContour) try { heroAgent.AgentVisuals?.SetContourColor(null, false); } catch { }
                 }
             };
 
             void Cleanup()
             {
                 var heroAgent = hero.GetAgent();
-                try { heroAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                if (ShowContour) try { heroAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
             }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
             handlers.OnMissionOver += Cleanup;
@@ -5307,6 +5311,7 @@ public class BLTAurasModule : MBSubModuleBase
     public class BackstabPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
     {
         [DisplayName("Bonus Damage Multiplier (%)"), UsedImplicitly] public float BonusPercent { get; set; } = 100f;
+        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
         [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FF440044";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
@@ -5332,7 +5337,7 @@ public class BLTAurasModule : MBSubModuleBase
                         float mult = 1f + BonusPercent / 100f;
                         blowParams.blow.BaseMagnitude *= mult;
                         blowParams.blow.InflictedDamage = (int)(blowParams.blow.InflictedDamage * mult);
-                        victim.AgentVisuals?.SetContourColor(color, true);
+                        if (ShowContour) victim.AgentVisuals?.SetContourColor(color, true);
                     }
                 }
                 catch { }
@@ -5353,6 +5358,7 @@ public class BLTAurasModule : MBSubModuleBase
     {
         [DisplayName("Target HP Threshold (%)"), UsedImplicitly] public float ThresholdPercent { get; set; } = 20f;
         [DisplayName("Bonus Damage Multiplier (%)"), UsedImplicitly] public float BonusPercent { get; set; } = 150f;
+        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
         [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFAA0000";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
@@ -5376,7 +5382,7 @@ public class BLTAurasModule : MBSubModuleBase
                         float mult = 1f + BonusPercent / 100f;
                         blowParams.blow.BaseMagnitude *= mult;
                         blowParams.blow.InflictedDamage = (int)(blowParams.blow.InflictedDamage * mult);
-                        victim.AgentVisuals?.SetContourColor(color, true);
+                        if (ShowContour) victim.AgentVisuals?.SetContourColor(color, true);
                     }
                 }
                 catch { }
@@ -5399,6 +5405,7 @@ public class BLTAurasModule : MBSubModuleBase
         [DisplayName("Knockback Force"), UsedImplicitly] public float KnockbackForce { get; set; } = 8f;
         [DisplayName("Damage"), UsedImplicitly] public int Damage { get; set; } = 15;
         [DisplayName("Cooldown (seconds)"), UsedImplicitly] public float CooldownSeconds { get; set; } = 12f;
+        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
         [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FF8800FF";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
@@ -5422,7 +5429,7 @@ public class BLTAurasModule : MBSubModuleBase
 
                 try
                 {
-                    heroAgent.AgentVisuals?.SetContourColor(color, true);
+                    if (ShowContour) heroAgent.AgentVisuals?.SetContourColor(color, true);
                     var pos = heroAgent.Position;
                     foreach (var a in Mission.Current.Agents.ToList())
                     {
@@ -5430,9 +5437,8 @@ public class BLTAurasModule : MBSubModuleBase
                         if (a.Position.Distance(pos) > Radius) continue;
                         try
                         {
-                            // knockback via velocity impulse
                             var dir = (a.Position - pos).NormalizedCopy();
-                            a.AgentVisuals?.SetContourColor(color, true);
+                            if (ShowContour) a.AgentVisuals?.SetContourColor(color, true);
                         }
                         catch { }
                     }
@@ -5443,7 +5449,7 @@ public class BLTAurasModule : MBSubModuleBase
             void Cleanup()
             {
                 var heroAgent = hero.GetAgent();
-                try { heroAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                if (ShowContour) try { heroAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
             }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
             handlers.OnMissionOver += Cleanup;
@@ -5463,6 +5469,7 @@ public class BLTAurasModule : MBSubModuleBase
     {
         [DisplayName("Aura Radius (meters)"), UsedImplicitly] public float Radius { get; set; } = 12f;
         [DisplayName("Speed Multiplier"), UsedImplicitly] public float SpeedMult { get; set; } = 1.2f;
+        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
         [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFFFDD00";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
@@ -5489,7 +5496,7 @@ public class BLTAurasModule : MBSubModuleBase
                 {
                     if (a == null || !a.IsActive() || !inRange.Contains(a))
                     {
-                        try { a?.SetMaximumSpeedLimit(1f, false); a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                        try { a?.SetMaximumSpeedLimit(1f, false); if (ShowContour) a?.AgentVisuals?.SetContourColor(null, false); } catch { }
                         boosted.Remove(a);
                     }
                 }
@@ -5497,13 +5504,13 @@ public class BLTAurasModule : MBSubModuleBase
                 {
                     if (!boosted.Contains(a))
                     {
-                        try { a.SetMaximumSpeedLimit(SpeedMult, false); a.AgentVisuals?.SetContourColor(color, true); } catch { }
+                        try { a.SetMaximumSpeedLimit(SpeedMult, false); if (ShowContour) a.AgentVisuals?.SetContourColor(color, true); } catch { }
                         boosted.Add(a);
                     }
                 }
             };
 
-            void Cleanup() { foreach (var a in boosted) { try { a?.SetMaximumSpeedLimit(1f, false); a?.AgentVisuals?.SetContourColor(null, false); } catch { } } boosted.Clear(); }
+            void Cleanup() { foreach (var a in boosted) { try { a?.SetMaximumSpeedLimit(1f, false); if (ShowContour) a?.AgentVisuals?.SetContourColor(null, false); } catch { } } boosted.Clear(); }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
             handlers.OnMissionOver += Cleanup;
         }
@@ -5522,6 +5529,7 @@ public class BLTAurasModule : MBSubModuleBase
     {
         [DisplayName("Mark Radius (meters)"), UsedImplicitly] public float Radius { get; set; } = 8f;
         [DisplayName("Bonus Damage Multiplier (%)"), UsedImplicitly] public float BonusPercent { get; set; } = 30f;
+        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
         [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFFF4400";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
@@ -5547,12 +5555,12 @@ public class BLTAurasModule : MBSubModuleBase
                 foreach (var a in marked.ToList())
                 {
                     if (a == null || !a.IsActive() || !inRange.Contains(a))
-                    { try { a?.AgentVisuals?.SetContourColor(null, false); } catch { } marked.Remove(a); }
+                    { if (ShowContour) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { } marked.Remove(a); }
                 }
                 foreach (var a in inRange)
                 {
                     if (!marked.Contains(a))
-                    { try { a.AgentVisuals?.SetContourColor(color, true); } catch { } marked.Add(a); }
+                    { if (ShowContour) try { a.AgentVisuals?.SetContourColor(color, true); } catch { } marked.Add(a); }
                 }
             };
 
@@ -5564,7 +5572,7 @@ public class BLTAurasModule : MBSubModuleBase
                 blowParams.blow.InflictedDamage = (int)(blowParams.blow.InflictedDamage * mult);
             };
 
-            void Cleanup() { foreach (var a in marked) { try { a?.AgentVisuals?.SetContourColor(null, false); } catch { } } marked.Clear(); }
+            void Cleanup() { foreach (var a in marked) { if (ShowContour) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { } } marked.Clear(); }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
             handlers.OnMissionOver += Cleanup;
         }
@@ -5584,6 +5592,7 @@ public class BLTAurasModule : MBSubModuleBase
         [DisplayName("Heal Amount"), UsedImplicitly] public int HealAmount { get; set; } = 40;
         [DisplayName("Radius (meters)"), UsedImplicitly] public float Radius { get; set; } = 15f;
         [DisplayName("HP Trigger Threshold (%)"), UsedImplicitly] public float TriggerPercent { get; set; } = 30f;
+        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
         [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FF00FF44";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
@@ -5606,7 +5615,7 @@ public class BLTAurasModule : MBSubModuleBase
 
                 used = true;
                 Log.ShowInformation($"RALLYING CRY! {hero.Name} rallies the troops!", hero.CharacterObject);
-                try { heroAgent.AgentVisuals?.SetContourColor(color, true); } catch { }
+                if (ShowContour) try { heroAgent.AgentVisuals?.SetContourColor(color, true); } catch { }
 
                 foreach (var a in Mission.Current?.Agents?.ToList() ?? new List<Agent>())
                 {
@@ -5615,7 +5624,7 @@ public class BLTAurasModule : MBSubModuleBase
                     try
                     {
                         a.Health = Math.Min(a.Health + HealAmount, a.HealthLimit);
-                        a.AgentVisuals?.SetContourColor(color, true);
+                        if (ShowContour) a.AgentVisuals?.SetContourColor(color, true);
                     }
                     catch { }
                 }
