@@ -19,11 +19,11 @@ Developed by **MesmerTurn** — Bannerlord streamer on Twitch.
 ## Requirements
 
 - Mount & Blade II Bannerlord **1.3.15**
-- **BLT 5.2.4 RoT Dragon** — download from [Releases](https://github.com/MesmerTurn/BLT-5.2.4-RoT-Dragon/releases/latest)
+- **BannerlordTwitch (BLT) 5.2.4** — download from [Nexus Mods](https://www.nexusmods.com/mountandblade2bannerlord/mods/981) or [GitHub](https://github.com/Randomchair22/Bannerlord-Twitch)
 
 ## Installation
 
-1. Download `BLT_5.2.4_RoT_Dragon_v*.zip` from the link above
+1. Download and install **BLT 5.2.4** from the link above
 2. Extract to your Bannerlord `Modules/` folder:
    ```
    ...\Mount & Blade II Bannerlord\Modules\
