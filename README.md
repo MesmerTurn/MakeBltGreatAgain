@@ -7,12 +7,20 @@ Developed by **MesmerTurn** — Bannerlord streamer on Twitch.
 
 ## Credits & Thanks
 
-- **Doravaro** — the streamer who first showed me BLT and sparked the idea for all of this
-- **GeneralEddy** — for showing that there's so much more that can be done with BLT
-- **Special thanks to:**
-  - **kanboru** — for the support and inspiration
-  - **Randomchair22** — for maintaining BLT 5.2.4 and keeping it alive
-  - **billw** — the original creator who breathed life into BLT
+### BLT — BannerlordTwitch
+
+**billw** — the original creator of BLT who built the entire foundation this mod runs on.  
+A massive, heartfelt thank you — none of this would exist without your work. 🙏
+
+**Randomchair22** — for maintaining BLT 5.2.4, keeping it alive and making the Dragon fork possible.
+
+**kanboru201** — for support, testing and always making things better.
+
+### Warm thanks to the community
+
+**GeneralEddy** — for showing what BLT can truly become and always pushing for more.
+
+**Doravaro** — the streamer who first introduced me to BLT and sparked everything that followed.
 
 ---
 
@@ -77,6 +85,7 @@ Developed by **MesmerTurn** — Bannerlord streamer on Twitch.
 | Rallying Cry | Heals nearby allies when hero HP drops below a threshold |
 | Shadowstep | Periodically teleports hero behind the nearest enemy |
 | Stealth | Periodically makes hero untargetable |
+| Thunder Strike | Each hit deals bonus electric damage and stuns the target briefly |
 
 All powers support: **duration**, **stack count**, **particle effects** and **contour color**.
 
@@ -84,6 +93,7 @@ All powers support: **duration**, **stack count**, **particle effects** and **co
 
 | Version | Changes |
 |---------|---------|
+| v1.5 | Removed Phoenix Rebirth and Auto Pickup (not working reliably) |
 | v1.4 | War Banner, Mark Target, Rallying Cry, Stealth |
 | v1.2 | Particle effects, power names |
 
