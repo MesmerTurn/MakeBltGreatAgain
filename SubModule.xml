@@ -3,7 +3,13 @@
 	<Name value="Make BLT Great Again"/>
 	<Id value="MakeBltGreatAgain"/>
 	<Version value="v1.4"/>
-	<GameVersions value="e1.3.15,e1.4.0,e1.4.1,e1.4.2,e1.4.3,e1.4.4,e1.4.5"/>
+	<GameVersion value="e1.3.15"/>
+	<GameVersion value="e1.4.0"/>
+	<GameVersion value="e1.4.1"/>
+	<GameVersion value="e1.4.2"/>
+	<GameVersion value="e1.4.3"/>
+	<GameVersion value="e1.4.4"/>
+	<GameVersion value="e1.4.5"/>
 	<DefaultModule value="false"/>
 	<SingleplayerModule value="true"/>
 	<Official value="false"/>
