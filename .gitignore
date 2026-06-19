@@ -1,5 +1,5 @@
 obj/
-bin/
+# bin/ tracked — contains the release DLL
 *.user
 .vs/
 packages/

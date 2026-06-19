@@ -2,7 +2,8 @@
 <Module>
 	<Name value="Make BLT Great Again"/>
 	<Id value="MakeBltGreatAgain"/>
-	<Version value="e1.1.0.0"/>
+	<Version value="v1.4"/>
+	<GameVersions value="e1.3.15,e1.4.0,e1.4.1,e1.4.2,e1.4.3,e1.4.4,e1.4.5"/>
 	<DefaultModule value="false"/>
 	<SingleplayerModule value="true"/>
 	<Official value="false"/>
