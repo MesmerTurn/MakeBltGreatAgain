@@ -4,3 +4,5 @@ obj/
 .vs/
 packages/
 *.nuget.g.*
+/git/
+/MakeBltGreatAgain/
