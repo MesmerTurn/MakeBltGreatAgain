@@ -5377,6 +5377,19 @@ public class BLTAurasModule : MBSubModuleBase
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
 
+        // Spawning inside OnGotAKill itself crashes the game ("Collection was modified; enumeration
+        // operation may not execute") - that handler fires from deep inside the engine's own
+        // Mission.OnAgentRemoved dispatch, and SpawnTroop mutates the agent list mid-enumeration.
+        // So: only decide/queue here, then do the actual SpawnTroop on the next OnMissionTick,
+        // exactly like WandererSpawnMissionBehavior's deferred-spawn queue.
+        private class PendingRaise
+        {
+            public Hero Hero;
+            public Agent HeroAgent;
+            public CharacterObject VictimChar;
+            public Vec3 Position;
+        }
+
         protected override void OnActivation(Hero hero, PowerHandler.Handlers handlers,
             Agent agent = null, DeactivationHandler deactivationHandler = null)
         {
@@ -5384,6 +5397,7 @@ public class BLTAurasModule : MBSubModuleBase
             int goldPerKill = PowerProgression.ScaleInt(this, hero, nameof(GoldPerKill), GoldPerKill);
             int maxActive = PowerProgression.ScaleInt(this, hero, nameof(MaxActive), MaxActive);
             var raisedAgents = new HashSet<Agent>();
+            var pending = new List<PendingRaise>();
 
             handlers.OnGotAKill += (attackerAgent, victimAgent, agentState, blow) =>
             {
@@ -5395,41 +5409,61 @@ public class BLTAurasModule : MBSubModuleBase
                     if (BLTWandererBehavior.IsWandererStringId(victimChar.StringId)) return; // never someone's wanderer
 
                     raisedAgents.RemoveWhere(a => a == null || !a.IsActive());
-                    if (raisedAgents.Count >= maxActive) return;
+                    if (raisedAgents.Count + pending.Count >= maxActive) return;
                     if (MBRandom.RandomFloat * 100f > chance) return;
 
                     var heroAgent = attackerAgent;
                     if (heroAgent == null || !heroAgent.IsActive()) return;
 
-                    PartyBase party = heroAgent.Origin is TaleWorlds.CampaignSystem.AgentOrigins.PartyAgentOrigin pao ? pao.Party
-                        : heroAgent.Origin?.BattleCombatant as PartyBase;
-                    if (party == null) return;
-
-                    var raised = Mission.Current.SpawnTroop(
-                        new TaleWorlds.CampaignSystem.AgentOrigins.PartyAgentOrigin(party, victimChar)
-                        , isPlayerSide: heroAgent.Team != null && heroAgent.Team.Side == Mission.Current.PlayerTeam?.Side
-                        , hasFormation: true
-                        , spawnWithHorse: false
-                        , isReinforcement: false
-                        , formationTroopCount: 1
-                        , formationTroopIndex: 0
-                        , isAlarmed: true
-                        , wieldInitialWeapons: true
-#if BLT_1315
-                        , forceDismounted: false
-#endif
-                        , initialPosition: victimAgent.Position
-                        , initialDirection: heroAgent.GetMovementDirection()
-                    );
-                    if (raised == null) return;
-                    if (heroAgent.Team != null && raised.Team != heroAgent.Team) raised.SetTeam(heroAgent.Team, true);
-                    if (heroAgent.Formation != null) raised.Formation = heroAgent.Formation;
-                    raisedAgents.Add(raised);
-                    NecromancyMissionBehavior.Track(raised, hero, goldPerKill);
-
-                    if (ShowMessage) Log.ShowInformation($"Necromancy! {hero.Name} reanimates a fallen {victimChar.Name}!", hero.CharacterObject);
+                    pending.Add(new PendingRaise { Hero = hero, HeroAgent = heroAgent, VictimChar = victimChar, Position = victimAgent.Position });
                 }
                 catch (Exception ex) { Log.Exception("NecromancyPower.OnGotAKill", ex); }
+            };
+
+            handlers.OnMissionTick += dt =>
+            {
+                if (pending.Count == 0) return;
+                try
+                {
+                    foreach (var p in pending)
+                    {
+                        try
+                        {
+                            if (p.HeroAgent == null || !p.HeroAgent.IsActive()) continue;
+
+                            PartyBase party = p.HeroAgent.Origin is TaleWorlds.CampaignSystem.AgentOrigins.PartyAgentOrigin pao ? pao.Party
+                                : p.HeroAgent.Origin?.BattleCombatant as PartyBase;
+                            if (party == null) continue;
+
+                            var raised = Mission.Current.SpawnTroop(
+                                new TaleWorlds.CampaignSystem.AgentOrigins.PartyAgentOrigin(party, p.VictimChar)
+                                , isPlayerSide: p.HeroAgent.Team != null && p.HeroAgent.Team.Side == Mission.Current.PlayerTeam?.Side
+                                , hasFormation: true
+                                , spawnWithHorse: false
+                                , isReinforcement: false
+                                , formationTroopCount: 1
+                                , formationTroopIndex: 0
+                                , isAlarmed: true
+                                , wieldInitialWeapons: true
+#if BLT_1315
+                                , forceDismounted: false
+#endif
+                                , initialPosition: p.Position
+                                , initialDirection: p.HeroAgent.GetMovementDirection()
+                            );
+                            if (raised == null) continue;
+                            if (p.HeroAgent.Team != null && raised.Team != p.HeroAgent.Team) raised.SetTeam(p.HeroAgent.Team, true);
+                            if (p.HeroAgent.Formation != null) raised.Formation = p.HeroAgent.Formation;
+                            raisedAgents.Add(raised);
+                            NecromancyMissionBehavior.Track(raised, p.Hero, goldPerKill);
+
+                            if (ShowMessage) Log.ShowInformation($"Necromancy! {p.Hero.Name} reanimates a fallen {p.VictimChar.Name}!", p.Hero.CharacterObject);
+                        }
+                        catch (Exception ex) { Log.Exception("NecromancyPower.ProcessPendingRaise", ex); }
+                    }
+                    pending.Clear();
+                }
+                catch (Exception ex) { Log.Exception("NecromancyPower.OnMissionTick", ex); }
             };
         }
 
