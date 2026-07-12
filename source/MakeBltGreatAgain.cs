@@ -1211,306 +1211,13 @@ public class BLTGuardModule : MBSubModuleBase
         }
     }
 
-    // Samodzielny system Capital - fork ma pelny system Capital+Upgrade (~3000 linii: kupowalny katalog
-    // ulepszen Fief/Clan/Kingdom, ekonomia osad). Sledztwo pokazalo ze WIEKSZOSC efektow ekonomicznych
-    // "Capital" (Loyalty/Prosperity/Security/Food/Tax/GarrisonCapacity/Hearth) jest w forku policzana
-    // (GetCapLoyaltyFlat itd.) ale NIGDZIE faktycznie nie podpieta pod natywna gre (brak modelu/patcha,
-    // ktory by to zaaplikowal do Settlement) - martwy kod nawet w zrodle, wiec nie ma czego "portowac".
-    // Realnie DZIALAJACE efekty to tylko: bonus do rozmiaru/predkosci partii i Renown/Influence dziennie,
-    // aplikowane przez dekoratory modeli PartySizeLimitModel/PartySpeedModel (ten sam bezpieczny,
-    // addytywny wzorzec co fork uzywa wobec modelu VANILLA - "previous" to cokolwiek jest juz
-    // zarejestrowane, wiec dziala identycznie z lub bez forka). Port ogranicza sie do TEGO dzialajacego
-    // rdzenia: wyznaczanie stolicy klanu (z cooldownem/transferem, logika 1:1 skopiowana z CapitalBehavior
-    // bo byla juz samodzielna) + male bonusy party/renown/influence. Katalog kupowalnych ulepszen
-    // Fief/Clan/Kingdom (2360-liniowy UpgradeBehavior) NIE jest portowany - to osobny, dużo większy system.
-    public class MBGACapitalConfig
-    {
-        private const string ID = "MBGA - Capital";
-        internal static void Register() => ActionManager.RegisterGlobalConfigType(ID, typeof(MBGACapitalConfig));
-        internal static MBGACapitalConfig Get() => ActionManager.GetGlobalConfig<MBGACapitalConfig>(ID);
-
-        [DisplayName("Enabled"), Description("Standalone re-implementation of the fork's clan Capital designation for an UNMODIFIED BLTAdoptAHero.dll. Off by default - leave disabled if running the MesmerTurn fork, which already has !capital with a richer upgrade system."), UsedImplicitly]
-        public bool Enabled { get; set; } = false;
-
-        [DisplayName("Cooldown Days"), Description("Days a clan must wait after losing its capital (siege, failed transfer) before it can set a new one."), UsedImplicitly]
-        public int CooldownDays { get; set; } = 30;
-
-        [DisplayName("Transfer Days"), Description("Days a capital transfer takes to complete once started."), UsedImplicitly]
-        public int TransferDays { get; set; } = 7;
-
-        [DisplayName("Party Size Bonus"), Description("Extra party size limit for the capital-holding clan's leader."), UsedImplicitly]
-        public int PartySizeBonus { get; set; } = 10;
-
-        [DisplayName("Party Speed Bonus"), Description("Extra party movement speed for the capital-holding clan's leader's party."), UsedImplicitly]
-        public float PartySpeedBonus { get; set; } = 2f;
-
-        [DisplayName("Renown Per Day"), Description("Clan renown gained per day while holding an active capital."), UsedImplicitly]
-        public float RenownDaily { get; set; } = 1f;
-
-        [DisplayName("Influence Per Day"), Description("Clan influence gained per day while holding an active capital."), UsedImplicitly]
-        public float InfluenceDaily { get; set; } = 1f;
-    }
-
-    public class BLTMBGACapitalBehavior : CampaignBehaviorBase
-    {
-        public static BLTMBGACapitalBehavior Current { get; private set; }
-
-        private Dictionary<string, string> _capitals = new Dictionary<string, string>();
-        private Dictionary<string, string> _xferTarget = new Dictionary<string, string>();
-        private Dictionary<string, string> _xferPrevious = new Dictionary<string, string>();
-        private Dictionary<string, float> _xferEndDay = new Dictionary<string, float>();
-        private Dictionary<string, float> _cooldownEnd = new Dictionary<string, float>();
-        private Dictionary<string, string> _cooldownRestore = new Dictionary<string, string>();
-
-        private MBGACapitalConfig Cfg => MBGACapitalConfig.Get();
-
-        public BLTMBGACapitalBehavior() { Current = this; }
-
-        public override void RegisterEvents()
-        {
-            CampaignEvents.DailyTickEvent.AddNonSerializedListener(this, OnDailyTick);
-        }
-
-        public override void SyncData(IDataStore ds)
-        {
-            ds.SyncData("MBGA_Capitals", ref _capitals);
-            ds.SyncData("MBGA_XferTarget", ref _xferTarget);
-            ds.SyncData("MBGA_XferPrevious", ref _xferPrevious);
-            ds.SyncData("MBGA_XferEndDay", ref _xferEndDay);
-            ds.SyncData("MBGA_CapCooldownEnd", ref _cooldownEnd);
-            ds.SyncData("MBGA_CapCooldownRestore", ref _cooldownRestore);
-            _capitals ??= new Dictionary<string, string>();
-            _xferTarget ??= new Dictionary<string, string>();
-            _xferPrevious ??= new Dictionary<string, string>();
-            _xferEndDay ??= new Dictionary<string, float>();
-            _cooldownEnd ??= new Dictionary<string, float>();
-            _cooldownRestore ??= new Dictionary<string, string>();
-        }
-
-        private void OnDailyTick()
-        {
-            try
-            {
-                if (Cfg == null || !Cfg.Enabled) return;
-                float today = (float)CampaignTime.Now.ToDays;
-                TickTransfers(today);
-                TickCooldowns(today);
-                TickCapitalLoss(today);
-                TickClanBonuses();
-            }
-            catch (Exception ex) { Log.Exception("[MBGACapital] Daily tick error", ex); }
-        }
-
-        private void TickTransfers(float today)
-        {
-            foreach (var clanId in _xferTarget.Keys.ToList())
-            {
-                var clan = Clan.All.FirstOrDefault(c => c.StringId == clanId);
-                if (clan == null) { ClearXfer(clanId); continue; }
-                var target = Settlement.All.FirstOrDefault(s => s.StringId == _xferTarget[clanId]);
-                if (target == null || target.OwnerClan != clan) { FailTransfer(clanId, clan, today, "target settlement was lost"); continue; }
-                if (!_xferEndDay.TryGetValue(clanId, out float end)) { ClearXfer(clanId); continue; }
-                if (today >= end)
-                {
-                    _capitals[clanId] = _xferTarget[clanId];
-                    ClearXfer(clanId);
-                }
-            }
-        }
-
-        private void TickCooldowns(float today)
-        {
-            foreach (var clanId in _cooldownEnd.Keys.ToList())
-            {
-                if (today < _cooldownEnd[clanId]) continue;
-                _cooldownEnd.Remove(clanId);
-                var clan = Clan.All.FirstOrDefault(c => c.StringId == clanId);
-                if (_cooldownRestore.TryGetValue(clanId, out var restoreId))
-                {
-                    _cooldownRestore.Remove(clanId);
-                    var prev = Settlement.All.FirstOrDefault(s => s.StringId == restoreId);
-                    if (clan != null && prev != null && prev.OwnerClan == clan)
-                        _capitals[clanId] = restoreId;
-                }
-            }
-        }
-
-        private void TickCapitalLoss(float today)
-        {
-            foreach (var clanId in _capitals.Keys.ToList())
-            {
-                var clan = Clan.All.FirstOrDefault(c => c.StringId == clanId);
-                var settlement = Settlement.All.FirstOrDefault(s => s.StringId == _capitals[clanId]);
-                if (clan == null || settlement == null || settlement.OwnerClan != clan)
-                {
-                    _capitals.Remove(clanId);
-                    if (clan != null && settlement != null)
-                        _cooldownEnd[clanId] = today + (Cfg?.CooldownDays ?? 30);
-                }
-            }
-        }
-
-        private void TickClanBonuses()
-        {
-            var cfg = Cfg;
-            if (cfg == null || (cfg.RenownDaily == 0f && cfg.InfluenceDaily == 0f)) return;
-            foreach (var clanId in _capitals.Keys)
-            {
-                var clan = Clan.All.FirstOrDefault(c => c.StringId == clanId);
-                if (clan == null) continue;
-                if (cfg.RenownDaily != 0f) clan.AddRenown(cfg.RenownDaily, false);
-                if (cfg.InfluenceDaily != 0f) clan.Influence += cfg.InfluenceDaily;
-            }
-        }
-
-        private void FailTransfer(string clanId, Clan clan, float today, string reason)
-        {
-            int coolDays = Cfg?.CooldownDays ?? 30;
-            string prev = _xferPrevious.TryGetValue(clanId, out var p) ? p : null;
-            ClearXfer(clanId);
-            _capitals.Remove(clanId);
-            _cooldownEnd[clanId] = today + coolDays;
-            if (!string.IsNullOrEmpty(prev)) _cooldownRestore[clanId] = prev;
-        }
-
-        private void ClearXfer(string clanId)
-        {
-            _xferTarget.Remove(clanId); _xferPrevious.Remove(clanId); _xferEndDay.Remove(clanId);
-        }
-
-        public Settlement GetCapital(Clan clan)
-        {
-            if (clan == null || !_capitals.TryGetValue(clan.StringId, out var id)) return null;
-            return Settlement.All.FirstOrDefault(s => s.StringId == id);
-        }
-
-        public bool HasActiveCapital(Clan clan) => clan != null && _capitals.ContainsKey(clan.StringId);
-        public bool IsTransferPending(Clan clan) => clan != null && _xferTarget.ContainsKey(clan.StringId);
-        public bool IsInCooldown(Clan clan) => clan != null && _cooldownEnd.ContainsKey(clan.StringId);
-
-        public float GetCooldownDaysLeft(Clan clan) =>
-            clan == null ? 0f : Math.Max(0f, (_cooldownEnd.TryGetValue(clan.StringId, out var d) ? d : 0f) - (float)CampaignTime.Now.ToDays);
-
-        public float GetTransferDaysLeft(Clan clan) =>
-            clan == null ? 0f : Math.Max(0f, (_xferEndDay.TryGetValue(clan.StringId, out var d) ? d : 0f) - (float)CampaignTime.Now.ToDays);
-
-        public bool SetCapital(Clan clan, Settlement s, out string err)
-        {
-            err = null;
-            if (IsInCooldown(clan)) { err = "Cannot set capital during cooldown"; return false; }
-            if (IsTransferPending(clan)) { err = "A transfer is already pending; cancel it first"; return false; }
-            if (s.OwnerClan != clan) { err = "You do not own that settlement"; return false; }
-            if (s.Town == null) { err = "Only towns and castles can be capitals"; return false; }
-            _capitals[clan.StringId] = s.StringId;
-            return true;
-        }
-
-        public bool BeginTransfer(Clan clan, Settlement newCap, int days, out string err)
-        {
-            err = null;
-            if (IsInCooldown(clan)) { err = "Cannot transfer capital during cooldown"; return false; }
-            if (IsTransferPending(clan)) { err = "A transfer is already in progress; cancel it first"; return false; }
-            if (!HasActiveCapital(clan)) { err = "Set a capital first before transferring"; return false; }
-            if (newCap.OwnerClan != clan) { err = "You do not own that settlement"; return false; }
-            if (newCap.Town == null) { err = "Only towns and castles can be capitals"; return false; }
-            if (GetCapital(clan) == newCap) { err = "That settlement is already your capital"; return false; }
-
-            string id = clan.StringId;
-            _xferPrevious[id] = _capitals[id];
-            _xferTarget[id] = newCap.StringId;
-            _xferEndDay[id] = (float)CampaignTime.Now.ToDays + days;
-            _capitals.Remove(id);
-            return true;
-        }
-
-        public bool CancelTransfer(Clan clan, out string err)
-        {
-            err = null;
-            if (!IsTransferPending(clan)) { err = "No pending transfer to cancel"; return false; }
-            string id = clan.StringId;
-            if (_xferPrevious.TryGetValue(id, out var prevId))
-            {
-                var prev = Settlement.All.FirstOrDefault(s => s.StringId == prevId);
-                if (prev != null && prev.OwnerClan == clan) _capitals[id] = prevId;
-            }
-            ClearXfer(id);
-            return true;
-        }
-
-        public int GetPartySizeBonus(Clan clan) => Cfg != null && Cfg.Enabled && HasActiveCapital(clan) ? Cfg.PartySizeBonus : 0;
-        public float GetPartySpeedBonus(Clan clan) => Cfg != null && Cfg.Enabled && HasActiveCapital(clan) ? Cfg.PartySpeedBonus : 0f;
-    }
-
-    public class MBGACapitalCommand : ICommandHandler
-    {
-        public class Settings { }
-        public Type HandlerConfigType => typeof(Settings);
-
-        public void Execute(ReplyContext context, object config)
-        {
-            var cfg = MBGACapitalConfig.Get();
-            if (cfg == null || !cfg.Enabled) { ActionManager.SendReply(context, "MBGA Capital is disabled."); return; }
-
-            var hero = BLTAdoptAHeroCampaignBehavior.Current?.GetAdoptedHero(context.UserName);
-            if (hero?.Clan == null) { ActionManager.SendReply(context, "You don't have an adopted hero with a clan."); return; }
-            var behavior = BLTMBGACapitalBehavior.Current;
-            if (behavior == null) { ActionManager.SendReply(context, "Capital system not ready."); return; }
-            var clan = hero.Clan;
-
-            var args = (context.Args ?? "").Trim().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-            string sub = args.Length > 0 ? args[0].ToLowerInvariant() : "status";
-
-            switch (sub)
-            {
-                case "status":
-                {
-                    var cap = behavior.GetCapital(clan);
-                    if (behavior.IsInCooldown(clan))
-                        ActionManager.SendReply(context, $"No capital - cooldown ends in {behavior.GetCooldownDaysLeft(clan):0.0} days.");
-                    else if (behavior.IsTransferPending(clan))
-                        ActionManager.SendReply(context, $"Capital transfer in progress - {behavior.GetTransferDaysLeft(clan):0.0} days left.");
-                    else if (cap != null)
-                        ActionManager.SendReply(context, $"Capital: {cap.Name} | +{behavior.GetPartySizeBonus(clan)} party size, +{behavior.GetPartySpeedBonus(clan)} party speed, +{cfg.RenownDaily}/day renown, +{cfg.InfluenceDaily}/day influence.");
-                    else
-                        ActionManager.SendReply(context, "No capital set. Use \"!mbgacapital set\" while in a town/castle you own.");
-                    return;
-                }
-                case "set":
-                {
-                    var s = Settlement.CurrentSettlement;
-                    if (s == null) { ActionManager.SendReply(context, "You must be in a settlement to set it as your capital."); return; }
-                    if (!behavior.SetCapital(clan, s, out string err)) { ActionManager.SendReply(context, err); return; }
-                    ActionManager.SendReply(context, $"{s.Name} is now your clan's capital!");
-                    return;
-                }
-                case "transfer":
-                {
-                    var s = Settlement.CurrentSettlement;
-                    if (s == null) { ActionManager.SendReply(context, "You must be in the destination settlement to begin a transfer."); return; }
-                    if (!behavior.BeginTransfer(clan, s, cfg.TransferDays, out string err)) { ActionManager.SendReply(context, err); return; }
-                    ActionManager.SendReply(context, $"Capital transfer to {s.Name} started - {cfg.TransferDays} days.");
-                    return;
-                }
-                case "cancel":
-                {
-                    if (!behavior.CancelTransfer(clan, out string err)) { ActionManager.SendReply(context, err); return; }
-                    ActionManager.SendReply(context, "Capital transfer cancelled.");
-                    return;
-                }
-                default:
-                    ActionManager.SendReply(context, "Usage: !mbgacapital status|set|transfer|cancel");
-                    return;
-            }
-        }
-    }
-
     // Samodzielny system Upgrade - fork ma pelny katalog Fief/Clan/Kingdom (~2360 linii). Sledztwo
-    // (patrz komentarz przy MBGACapitalConfig) pokazalo ze polowa jego "efektow" (Loyalty/Prosperity/
-    // Security/Food/Tax/GarrisonCapacity/Hearth) jest liczona ale nigdzie nie podpieta pod prawdziwa
-    // gre - martwy kod nawet w zrodle forka. Ten port skupia sie na CZESCI KTORA REALNIE DZIALA: kupowalny
-    // katalog ulepszen klanu dajacych bonus do rozmiaru/predkosci partii, wpiety w TE SAME dekoratory
-    // modeli co Capital (MBGACapitalPartySizeModel/MBGACapitalPartySpeedModel, ponizej), zeby oba systemy
-    // (Capital + Upgrade) stakowaly sie naturalnie przez jeden, wspolny punkt integracji z gra.
+    // pokazalo ze polowa jego "efektow" (Loyalty/Prosperity/Security/Food/Tax/GarrisonCapacity/Hearth)
+    // jest liczona ale nigdzie nie podpieta pod prawdziwa gre - martwy kod nawet w zrodle forka. Ten port
+    // skupia sie na CZESCI KTORA REALNIE DZIALA: kupowalny katalog ulepszen klanu dajacych bonus do
+    // rozmiaru/predkosci partii, wpiety w dekoratory modeli PartySizeLimitModel/PartySpeedModel (ten sam
+    // bezpieczny, addytywny wzorzec co fork uzywa wobec modelu VANILLA - "previous" to cokolwiek jest juz
+    // zarejestrowane, wiec dziala identycznie z lub bez forka).
     public class MBGAUpgradeDef
     {
         [DisplayName("ID"), Description("Unique identifier for this upgrade (used with !mbgaupgrade buy <id>)."), UsedImplicitly]
@@ -1674,12 +1381,12 @@ public class BLTGuardModule : MBSubModuleBase
         }
     }
 
-    public class MBGACapitalPartySizeModel : TaleWorlds.CampaignSystem.ComponentInterfaces.PartySizeLimitModel
+    public class MBGAUpgradePartySizeModel : TaleWorlds.CampaignSystem.ComponentInterfaces.PartySizeLimitModel
     {
         private readonly TaleWorlds.CampaignSystem.ComponentInterfaces.PartySizeLimitModel _previous;
-        private static readonly TaleWorlds.Localization.TextObject Text = new TaleWorlds.Localization.TextObject("MBGA Capital bonus");
+        private static readonly TaleWorlds.Localization.TextObject Text = new TaleWorlds.Localization.TextObject("MBGA Upgrade bonus");
 
-        public MBGACapitalPartySizeModel(TaleWorlds.CampaignSystem.ComponentInterfaces.PartySizeLimitModel previous) { _previous = previous; }
+        public MBGAUpgradePartySizeModel(TaleWorlds.CampaignSystem.ComponentInterfaces.PartySizeLimitModel previous) { _previous = previous; }
 
         public override int MinimumNumberOfVillagersAtVillagerParty => _previous.MinimumNumberOfVillagersAtVillagerParty;
 
@@ -1691,16 +1398,14 @@ public class BLTGuardModule : MBSubModuleBase
             var result = _previous.GetPartyMemberSizeLimit(party, includeDescriptions);
             try
             {
-                var behavior = BLTMBGACapitalBehavior.Current;
                 var upgradeBehavior = BLTMBGAUpgradeBehavior.Current;
                 if (party?.LeaderHero?.Clan != null)
                 {
-                    int bonus = (behavior?.GetPartySizeBonus(party.LeaderHero.Clan) ?? 0)
-                              + (upgradeBehavior?.GetPartySizeBonus(party.LeaderHero.Clan) ?? 0);
+                    int bonus = upgradeBehavior?.GetPartySizeBonus(party.LeaderHero.Clan) ?? 0;
                     if (bonus != 0) result.Add(bonus, Text);
                 }
             }
-            catch (Exception ex) { Log.Exception("MBGACapitalPartySizeModel.GetPartyMemberSizeLimit failed", ex); }
+            catch (Exception ex) { Log.Exception("MBGAUpgradePartySizeModel.GetPartyMemberSizeLimit failed", ex); }
             return result;
         }
 
@@ -1723,12 +1428,12 @@ public class BLTGuardModule : MBSubModuleBase
             => _previous.FindAppropriateInitialRosterForMobileParty(party, partyTemplate);
     }
 
-    public class MBGACapitalPartySpeedModel : TaleWorlds.CampaignSystem.ComponentInterfaces.PartySpeedModel
+    public class MBGAUpgradePartySpeedModel : TaleWorlds.CampaignSystem.ComponentInterfaces.PartySpeedModel
     {
         private readonly TaleWorlds.CampaignSystem.ComponentInterfaces.PartySpeedModel _previous;
-        private static readonly TaleWorlds.Localization.TextObject Text = new TaleWorlds.Localization.TextObject("MBGA Capital bonus");
+        private static readonly TaleWorlds.Localization.TextObject Text = new TaleWorlds.Localization.TextObject("MBGA Upgrade bonus");
 
-        public MBGACapitalPartySpeedModel(TaleWorlds.CampaignSystem.ComponentInterfaces.PartySpeedModel previous) { _previous = previous; }
+        public MBGAUpgradePartySpeedModel(TaleWorlds.CampaignSystem.ComponentInterfaces.PartySpeedModel previous) { _previous = previous; }
 
         public override float BaseSpeed => _previous.BaseSpeed;
         public override float MinimumSpeed => _previous.MinimumSpeed;
@@ -1741,16 +1446,14 @@ public class BLTGuardModule : MBSubModuleBase
             var result = _previous.CalculateFinalSpeed(mobileParty, finalSpeed);
             try
             {
-                var behavior = BLTMBGACapitalBehavior.Current;
                 var upgradeBehavior = BLTMBGAUpgradeBehavior.Current;
                 if (mobileParty?.Army == null && mobileParty?.LeaderHero?.Clan != null)
                 {
-                    float bonus = (behavior?.GetPartySpeedBonus(mobileParty.LeaderHero.Clan) ?? 0f)
-                                + (upgradeBehavior?.GetPartySpeedBonus(mobileParty.LeaderHero.Clan) ?? 0f);
+                    float bonus = upgradeBehavior?.GetPartySpeedBonus(mobileParty.LeaderHero.Clan) ?? 0f;
                     if (bonus != 0f) result.Add(bonus, Text);
                 }
             }
-            catch (Exception ex) { Log.Exception("MBGACapitalPartySpeedModel.CalculateFinalSpeed failed", ex); }
+            catch (Exception ex) { Log.Exception("MBGAUpgradePartySpeedModel.CalculateFinalSpeed failed", ex); }
             return result;
         }
     }
@@ -1789,7 +1492,7 @@ public class BLTGuardModule : MBSubModuleBase
         public float Tier8HealthMultiplier { get; set; } = 2f;
     }
 
-    public class MBGATier78Command : ICommandHandler
+    public class MBGATierUpCommand : ICommandHandler
     {
         public class Settings { }
         public Type HandlerConfigType => typeof(Settings);
@@ -1840,7 +1543,7 @@ public class BLTGuardModule : MBSubModuleBase
             }
             catch (Exception ex)
             {
-                Log.Exception("MBGATier78Command.Execute failed", ex);
+                Log.Exception("MBGATierUpCommand.Execute failed", ex);
                 ActionManager.SendReply(context, "Something went wrong upgrading to the next tier.");
             }
         }
@@ -3146,7 +2849,6 @@ public class BLTAurasModule : MBSubModuleBase
             try { MBGARetinueRefundConfig.Register(); } catch (Exception ex) { Log.Exception("[RetinueRefund] Register failed", ex); }
             try { MBGAPrestigeConfig.Register(); } catch (Exception ex) { Log.Exception("[Prestige] Register failed", ex); }
             try { MBGADiscardRefundConfig.Register(); } catch (Exception ex) { Log.Exception("[DiscardRefund] Register failed", ex); }
-            try { MBGACapitalConfig.Register(); } catch (Exception ex) { Log.Exception("[Capital] Register failed", ex); }
             try { MBGATier78Config.Register(); } catch (Exception ex) { Log.Exception("[Tier78] Register failed", ex); }
             try { MBGAUpgradeConfig.Register(); } catch (Exception ex) { Log.Exception("[Upgrade] Register failed", ex); }
         }
@@ -3248,18 +2950,17 @@ public class BLTAurasModule : MBSubModuleBase
                 campaignStarter.AddBehavior(new BLTBannerSanitizerBehavior());
                 campaignStarter.AddBehavior(new BLTWandererBehavior());
                 campaignStarter.AddBehavior(new BLTMBGAPrestigeBehavior());
-                campaignStarter.AddBehavior(new BLTMBGACapitalBehavior());
                 campaignStarter.AddBehavior(new BLTMBGAUpgradeBehavior());
             }
 
             try
             {
-                gameStarterObject.AddModel(new MBGACapitalPartySizeModel(
+                gameStarterObject.AddModel(new MBGAUpgradePartySizeModel(
                     gameStarterObject.Models.OfType<TaleWorlds.CampaignSystem.ComponentInterfaces.PartySizeLimitModel>().FirstOrDefault()));
-                gameStarterObject.AddModel(new MBGACapitalPartySpeedModel(
+                gameStarterObject.AddModel(new MBGAUpgradePartySpeedModel(
                     gameStarterObject.Models.OfType<TaleWorlds.CampaignSystem.ComponentInterfaces.PartySpeedModel>().FirstOrDefault()));
             }
-            catch (Exception ex) { Log.Exception("[MBGACapital] Model registration failed", ex); }
+            catch (Exception ex) { Log.Exception("[MBGAUpgrade] Model registration failed", ex); }
         }
 
         public override void OnMissionBehaviorInitialize(Mission mission)
