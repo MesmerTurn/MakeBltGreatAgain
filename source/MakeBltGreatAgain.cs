@@ -1504,6 +1504,176 @@ public class BLTGuardModule : MBSubModuleBase
         }
     }
 
+    // Samodzielny system Upgrade - fork ma pelny katalog Fief/Clan/Kingdom (~2360 linii). Sledztwo
+    // (patrz komentarz przy MBGACapitalConfig) pokazalo ze polowa jego "efektow" (Loyalty/Prosperity/
+    // Security/Food/Tax/GarrisonCapacity/Hearth) jest liczona ale nigdzie nie podpieta pod prawdziwa
+    // gre - martwy kod nawet w zrodle forka. Ten port skupia sie na CZESCI KTORA REALNIE DZIALA: kupowalny
+    // katalog ulepszen klanu dajacych bonus do rozmiaru/predkosci partii, wpiety w TE SAME dekoratory
+    // modeli co Capital (MBGACapitalPartySizeModel/MBGACapitalPartySpeedModel, ponizej), zeby oba systemy
+    // (Capital + Upgrade) stakowaly sie naturalnie przez jeden, wspolny punkt integracji z gra.
+    public class MBGAUpgradeDef
+    {
+        [DisplayName("ID"), Description("Unique identifier for this upgrade (used with !mbgaupgrade buy <id>)."), UsedImplicitly]
+        public string ID { get; set; } = "";
+
+        [DisplayName("Display Name"), Description("Name shown in !mbgaupgrade list."), UsedImplicitly]
+        public string DisplayName { get; set; } = "";
+
+        [DisplayName("Cost"), Description("Gold cost to purchase this upgrade (one-time)."), UsedImplicitly]
+        public int Cost { get; set; } = 50000;
+
+        [DisplayName("Party Size Bonus"), Description("Extra party size limit granted while owned."), UsedImplicitly]
+        public int PartySizeBonus { get; set; } = 0;
+
+        [DisplayName("Party Speed Bonus"), Description("Extra party speed granted while owned."), UsedImplicitly]
+        public float PartySpeedBonus { get; set; } = 0f;
+    }
+
+    public class MBGAUpgradeConfig
+    {
+        private const string ID = "MBGA - Upgrade Catalog";
+        internal static void Register() => ActionManager.RegisterGlobalConfigType(ID, typeof(MBGAUpgradeConfig));
+        internal static MBGAUpgradeConfig Get() => ActionManager.GetGlobalConfig<MBGAUpgradeConfig>(ID);
+
+        [DisplayName("Enabled"), Description("Standalone re-implementation of the fork's buyable clan upgrade catalog for an UNMODIFIED BLTAdoptAHero.dll, scoped to the effects that are actually wired into gameplay (party size/speed). Off by default - leave disabled if running the MesmerTurn fork, which already has its own !upgrade system."), UsedImplicitly]
+        public bool Enabled { get; set; } = false;
+
+        [DisplayName("Upgrades"), Description("The catalog of purchasable clan upgrades. Each has a unique ID, cost, and party size/speed bonus."), UsedImplicitly]
+        public List<MBGAUpgradeDef> Upgrades { get; set; } = new List<MBGAUpgradeDef>
+        {
+            new MBGAUpgradeDef { ID = "muster", DisplayName = "Muster Grounds", Cost = 50000, PartySizeBonus = 10, PartySpeedBonus = 0f },
+            new MBGAUpgradeDef { ID = "stables", DisplayName = "Clan Stables", Cost = 75000, PartySizeBonus = 0, PartySpeedBonus = 1f },
+            new MBGAUpgradeDef { ID = "warcamp", DisplayName = "War Camp", Cost = 150000, PartySizeBonus = 25, PartySpeedBonus = 0f },
+            new MBGAUpgradeDef { ID = "roadnetwork", DisplayName = "Road Network", Cost = 200000, PartySizeBonus = 0, PartySpeedBonus = 2f },
+        };
+    }
+
+    public class BLTMBGAUpgradeBehavior : CampaignBehaviorBase
+    {
+        public static BLTMBGAUpgradeBehavior Current { get; private set; }
+
+        private Dictionary<string, string> _owned = new Dictionary<string, string>(); // clanId -> comma-separated upgrade IDs
+
+        public BLTMBGAUpgradeBehavior() { Current = this; }
+
+        public override void RegisterEvents() { }
+
+        public override void SyncData(IDataStore ds)
+        {
+            ds.SyncData("MBGA_ClanUpgrades", ref _owned);
+            _owned ??= new Dictionary<string, string>();
+        }
+
+        private static List<string> Parse(string s)
+            => string.IsNullOrEmpty(s) ? new List<string>() : s.Split(',').Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+        private static string Ser(List<string> l) => l == null || l.Count == 0 ? "" : string.Join(",", l);
+
+        public List<string> GetOwnedUpgrades(Clan clan)
+        {
+            if (clan == null) return new List<string>();
+            return _owned.TryGetValue(clan.StringId, out var s) ? Parse(s) : new List<string>();
+        }
+
+        public bool HasUpgrade(Clan clan, string id)
+            => clan != null && GetOwnedUpgrades(clan).Contains(id, StringComparer.OrdinalIgnoreCase);
+
+        public bool BuyUpgrade(Clan clan, string id, out string err)
+        {
+            err = null;
+            var cfg = MBGAUpgradeConfig.Get();
+            var def = cfg?.Upgrades?.FirstOrDefault(u => string.Equals(u.ID, id, StringComparison.OrdinalIgnoreCase));
+            if (def == null) { err = $"Unknown upgrade '{id}'."; return false; }
+            if (HasUpgrade(clan, def.ID)) { err = $"Your clan already owns '{def.DisplayName}'."; return false; }
+
+            int gold = BLTAdoptAHeroCampaignBehavior.Current?.GetHeroGold(clan.Leader) ?? 0;
+            if (gold < def.Cost) { err = $"Not enough gold (need {def.Cost}, have {gold})."; return false; }
+
+            BLTAdoptAHeroCampaignBehavior.Current.ChangeHeroGold(clan.Leader, -def.Cost, isSpending: true);
+            var l = GetOwnedUpgrades(clan);
+            l.Add(def.ID);
+            _owned[clan.StringId] = Ser(l);
+            return true;
+        }
+
+        public int GetPartySizeBonus(Clan clan)
+        {
+            var cfg = MBGAUpgradeConfig.Get();
+            if (cfg == null || !cfg.Enabled || clan == null) return 0;
+            int sum = 0;
+            foreach (var id in GetOwnedUpgrades(clan))
+            {
+                var def = cfg.Upgrades?.FirstOrDefault(u => string.Equals(u.ID, id, StringComparison.OrdinalIgnoreCase));
+                if (def != null) sum += def.PartySizeBonus;
+            }
+            return sum;
+        }
+
+        public float GetPartySpeedBonus(Clan clan)
+        {
+            var cfg = MBGAUpgradeConfig.Get();
+            if (cfg == null || !cfg.Enabled || clan == null) return 0f;
+            float sum = 0f;
+            foreach (var id in GetOwnedUpgrades(clan))
+            {
+                var def = cfg.Upgrades?.FirstOrDefault(u => string.Equals(u.ID, id, StringComparison.OrdinalIgnoreCase));
+                if (def != null) sum += def.PartySpeedBonus;
+            }
+            return sum;
+        }
+    }
+
+    public class MBGAUpgradeCommand : ICommandHandler
+    {
+        public class Settings { }
+        public Type HandlerConfigType => typeof(Settings);
+
+        public void Execute(ReplyContext context, object config)
+        {
+            var cfg = MBGAUpgradeConfig.Get();
+            if (cfg == null || !cfg.Enabled) { ActionManager.SendReply(context, "MBGA Upgrade system is disabled."); return; }
+
+            var hero = BLTAdoptAHeroCampaignBehavior.Current?.GetAdoptedHero(context.UserName);
+            if (hero?.Clan == null) { ActionManager.SendReply(context, "You don't have an adopted hero with a clan."); return; }
+            var behavior = BLTMBGAUpgradeBehavior.Current;
+            if (behavior == null) { ActionManager.SendReply(context, "Upgrade system not ready."); return; }
+            var clan = hero.Clan;
+            if (clan.Leader != hero) { ActionManager.SendReply(context, "Only the clan leader can manage clan upgrades."); return; }
+
+            var args = (context.Args ?? "").Trim().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            string sub = args.Length > 0 ? args[0].ToLowerInvariant() : "list";
+
+            switch (sub)
+            {
+                case "list":
+                {
+                    var owned = behavior.GetOwnedUpgrades(clan);
+                    var lines = (cfg.Upgrades ?? new List<MBGAUpgradeDef>()).Select(u =>
+                        $"{u.ID}={u.DisplayName} ({u.Cost}g" +
+                        (u.PartySizeBonus != 0 ? $", +{u.PartySizeBonus} size" : "") +
+                        (u.PartySpeedBonus != 0 ? $", +{u.PartySpeedBonus} speed" : "") +
+                        $"){(owned.Contains(u.ID, StringComparer.OrdinalIgnoreCase) ? " [OWNED]" : "")}");
+                    ActionManager.SendReply(context, string.Join(" | ", lines));
+                    return;
+                }
+                case "buy":
+                {
+                    if (args.Length < 2) { ActionManager.SendReply(context, "Usage: !mbgaupgrade buy <id>"); return; }
+                    if (!behavior.BuyUpgrade(clan, args[1], out string err)) { ActionManager.SendReply(context, err); return; }
+                    ActionManager.SendReply(context, $"Clan upgrade '{args[1]}' purchased!");
+                    return;
+                }
+                case "status":
+                {
+                    ActionManager.SendReply(context, $"Owned: {string.Join(", ", behavior.GetOwnedUpgrades(clan))} | +{behavior.GetPartySizeBonus(clan)} party size, +{behavior.GetPartySpeedBonus(clan)} party speed.");
+                    return;
+                }
+                default:
+                    ActionManager.SendReply(context, "Usage: !mbgaupgrade list|buy <id>|status");
+                    return;
+            }
+        }
+    }
+
     public class MBGACapitalPartySizeModel : TaleWorlds.CampaignSystem.ComponentInterfaces.PartySizeLimitModel
     {
         private readonly TaleWorlds.CampaignSystem.ComponentInterfaces.PartySizeLimitModel _previous;
@@ -1522,9 +1692,11 @@ public class BLTGuardModule : MBSubModuleBase
             try
             {
                 var behavior = BLTMBGACapitalBehavior.Current;
-                if (behavior != null && party?.LeaderHero?.Clan != null)
+                var upgradeBehavior = BLTMBGAUpgradeBehavior.Current;
+                if (party?.LeaderHero?.Clan != null)
                 {
-                    int bonus = behavior.GetPartySizeBonus(party.LeaderHero.Clan);
+                    int bonus = (behavior?.GetPartySizeBonus(party.LeaderHero.Clan) ?? 0)
+                              + (upgradeBehavior?.GetPartySizeBonus(party.LeaderHero.Clan) ?? 0);
                     if (bonus != 0) result.Add(bonus, Text);
                 }
             }
@@ -1570,14 +1742,163 @@ public class BLTGuardModule : MBSubModuleBase
             try
             {
                 var behavior = BLTMBGACapitalBehavior.Current;
-                if (behavior != null && mobileParty?.Army == null && mobileParty?.LeaderHero?.Clan != null)
+                var upgradeBehavior = BLTMBGAUpgradeBehavior.Current;
+                if (mobileParty?.Army == null && mobileParty?.LeaderHero?.Clan != null)
                 {
-                    float bonus = behavior.GetPartySpeedBonus(mobileParty.LeaderHero.Clan);
+                    float bonus = (behavior?.GetPartySpeedBonus(mobileParty.LeaderHero.Clan) ?? 0f)
+                                + (upgradeBehavior?.GetPartySpeedBonus(mobileParty.LeaderHero.Clan) ?? 0f);
                     if (bonus != 0f) result.Add(bonus, Text);
                 }
             }
             catch (Exception ex) { Log.Exception("MBGACapitalPartySpeedModel.CalculateFinalSpeed failed", ex); }
             return result;
+        }
+    }
+
+    // Samodzielna progresja Tier 7/8 - fork blokuje/odblokowuje to przez bramke wewnatrz duzej,
+    // internal metody EquipHero.ExecuteInternal (nierozlaczna bez przepisania calosci equipu). Klucz:
+    // UpgradeEquipment(targetTier: 6 lub 7) juz DZIALA bezpiecznie samo z siebie - poniewaz natywne
+    // itemy istnieja tylko do Tier 6 (indeks 5), logika "najblizszy tier <= target" naturalnie laduje
+    // na najwyzszym dostepnym (Tier 6) gdy poprosimy o wiecej - bez zadnych zmian w doborze sprzetu.
+    // Wystarczy wiec: (1) wlasna komenda ktora POMIJA bramke forka wolajac UpgradeEquipment bezposrednio
+    // przez refleksje (dokladnie ten sam wzorzec co RebornCommand juz uzywa), (2) wlasne
+    // GetEquipmentTier/SetEquipmentTier (public, identyczne w forku i orginale) do sledzenia "wirtualnego"
+    // tieru 7/8 ponad naturalny limit gry, (3) bonusy staty na tych samych natywnych hookach co Prestige.
+    public class MBGATier78Config
+    {
+        private const string ID = "MBGA - Tier 7-8 Progression";
+        internal static void Register() => ActionManager.RegisterGlobalConfigType(ID, typeof(MBGATier78Config));
+        internal static MBGATier78Config Get() => ActionManager.GetGlobalConfig<MBGATier78Config>(ID);
+
+        [DisplayName("Enabled"), Description("Standalone re-implementation of the fork's Tier 7 (Elite) / Tier 8 (Legendary) progression for an UNMODIFIED BLTAdoptAHero.dll. Off by default - leave disabled if running the MesmerTurn fork, which already has this."), UsedImplicitly]
+        public bool Enabled { get; set; } = false;
+
+        [DisplayName("Cost Tier 7 (Elite)"), Description("Gold cost to advance from Tier 6 (native max) to Tier 7."), UsedImplicitly]
+        public int CostTier7 { get; set; } = 600000;
+
+        [DisplayName("Cost Tier 8 (Legendary)"), Description("Gold cost to advance from Tier 7 to Tier 8."), UsedImplicitly]
+        public int CostTier8 { get; set; } = 900000;
+
+        [DisplayName("Tier 7 Damage Multiplier"), Description("Outgoing damage multiplier at Tier 7+ (e.g. 1.15 = +15%)."), UsedImplicitly]
+        public float Tier7DamageMultiplier { get; set; } = 1.15f;
+
+        [DisplayName("Tier 7 Armor Multiplier"), Description("Armor effectiveness multiplier at Tier 7+."), UsedImplicitly]
+        public float Tier7ArmorMultiplier { get; set; } = 1.15f;
+
+        [DisplayName("Tier 8 Health Multiplier"), Description("Max HP multiplier at Tier 8 (e.g. 2.0 = double HP)."), UsedImplicitly]
+        public float Tier8HealthMultiplier { get; set; } = 2f;
+    }
+
+    public class MBGATier78Command : ICommandHandler
+    {
+        public class Settings { }
+        public Type HandlerConfigType => typeof(Settings);
+
+        public void Execute(ReplyContext context, object config)
+        {
+            var cfg = MBGATier78Config.Get();
+            if (cfg == null || !cfg.Enabled) { ActionManager.SendReply(context, "MBGA Tier 7/8 progression is disabled."); return; }
+
+            var beh = BLTAdoptAHeroCampaignBehavior.Current;
+            var hero = beh?.GetAdoptedHero(context.UserName);
+            if (hero == null) { ActionManager.SendReply(context, "You don't have an adopted hero."); return; }
+            if (Mission.Current != null) { ActionManager.SendReply(context, "Cannot upgrade equipment while a mission is active!"); return; }
+
+            int currentTier = beh.GetEquipmentTier(hero); // 0-based; 5 = native Tier 6 max
+            if (currentTier < 5) { ActionManager.SendReply(context, "Reach Tier 6 first with the normal upgrade command."); return; }
+            if (currentTier >= 7) { ActionManager.SendReply(context, "Already at Tier 8 (Legendary), the maximum."); return; }
+
+            int targetTier = currentTier + 1; // 6 = Tier 7, 7 = Tier 8
+            int cost = targetTier == 6 ? cfg.CostTier7 : cfg.CostTier8;
+            int availableGold = beh.GetHeroGold(hero);
+            if (availableGold < cost) { ActionManager.SendReply(context, $"Not enough gold (need {cost}, have {availableGold})."); return; }
+
+            try
+            {
+                var classDef = beh.GetClass(hero);
+                var equipHeroType = typeof(BLTAdoptAHeroCampaignBehavior).Assembly.GetTypes()
+                    .FirstOrDefault(t => t.Name == "EquipHero");
+                var upgradeMethod = equipHeroType?.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                    .FirstOrDefault(m => m.Name == "UpgradeEquipment");
+                if (upgradeMethod != null)
+                {
+                    var parameters = upgradeMethod.GetParameters();
+                    var args = new object[parameters.Length];
+                    args[0] = hero;
+                    args[1] = targetTier;
+                    args[2] = classDef;
+                    args[3] = false; // replaceSameTier
+                    for (int i = 4; i < parameters.Length; i++) args[i] = Type.Missing;
+                    upgradeMethod.Invoke(null, args);
+                }
+
+                beh.SetEquipmentTier(hero, targetTier);
+                beh.ChangeHeroGold(hero, -cost, isSpending: true);
+
+                string label = targetTier == 6 ? "Tier 7 (Elite)" : "Tier 8 (Legendary)";
+                ActionManager.SendReply(context, $"{context.UserName} advanced to {label}!");
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("MBGATier78Command.Execute failed", ex);
+                ActionManager.SendReply(context, "Something went wrong upgrading to the next tier.");
+            }
+        }
+    }
+
+    [HarmonyPatch]
+    internal static class MBGATier78StatPatches
+    {
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(Agent), "BaseHealthLimit", MethodType.Getter)]
+        private static void HealthPostfix(Agent __instance, ref float __result)
+        {
+            try
+            {
+                var cfg = MBGATier78Config.Get();
+                if (cfg == null || !cfg.Enabled) return;
+                var hero = (__instance?.Character as CharacterObject)?.HeroObject;
+                if (hero == null) return;
+                if ((BLTAdoptAHeroCampaignBehavior.Current?.GetEquipmentTier(hero) ?? -1) >= 7)
+                    __result *= cfg.Tier8HealthMultiplier;
+            }
+            catch (Exception ex) { Log.Exception("MBGATier78StatPatches.HealthPostfix failed", ex); }
+        }
+
+        [HarmonyPrefix]
+        [HarmonyPatch(typeof(Mission), "RegisterBlow")]
+        private static void DamagePrefix(Agent attacker, ref Blow b)
+        {
+            try
+            {
+                var cfg = MBGATier78Config.Get();
+                if (cfg == null || !cfg.Enabled || attacker == null) return;
+                var hero = attacker.GetAdoptedHero();
+                if (hero == null) return;
+                if ((BLTAdoptAHeroCampaignBehavior.Current?.GetEquipmentTier(hero) ?? -1) >= 6)
+                {
+                    float mult = cfg.Tier7DamageMultiplier;
+                    b.BaseMagnitude *= mult;
+                    b.InflictedDamage = (int)(b.InflictedDamage * mult);
+                }
+            }
+            catch (Exception ex) { Log.Exception("MBGATier78StatPatches.DamagePrefix failed", ex); }
+        }
+
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(Agent), "GetBaseArmorEffectivenessForBodyPart")]
+        private static void ArmorPostfix(Agent __instance, ref float __result)
+        {
+            try
+            {
+                var cfg = MBGATier78Config.Get();
+                if (cfg == null || !cfg.Enabled) return;
+                var hero = (__instance?.Character as CharacterObject)?.HeroObject;
+                if (hero == null) return;
+                if ((BLTAdoptAHeroCampaignBehavior.Current?.GetEquipmentTier(hero) ?? -1) >= 6)
+                    __result *= cfg.Tier7ArmorMultiplier;
+            }
+            catch (Exception ex) { Log.Exception("MBGATier78StatPatches.ArmorPostfix failed", ex); }
         }
     }
 
@@ -2826,6 +3147,8 @@ public class BLTAurasModule : MBSubModuleBase
             try { MBGAPrestigeConfig.Register(); } catch (Exception ex) { Log.Exception("[Prestige] Register failed", ex); }
             try { MBGADiscardRefundConfig.Register(); } catch (Exception ex) { Log.Exception("[DiscardRefund] Register failed", ex); }
             try { MBGACapitalConfig.Register(); } catch (Exception ex) { Log.Exception("[Capital] Register failed", ex); }
+            try { MBGATier78Config.Register(); } catch (Exception ex) { Log.Exception("[Tier78] Register failed", ex); }
+            try { MBGAUpgradeConfig.Register(); } catch (Exception ex) { Log.Exception("[Upgrade] Register failed", ex); }
         }
 
         protected override void OnSubModuleLoad()
@@ -2926,6 +3249,7 @@ public class BLTAurasModule : MBSubModuleBase
                 campaignStarter.AddBehavior(new BLTWandererBehavior());
                 campaignStarter.AddBehavior(new BLTMBGAPrestigeBehavior());
                 campaignStarter.AddBehavior(new BLTMBGACapitalBehavior());
+                campaignStarter.AddBehavior(new BLTMBGAUpgradeBehavior());
             }
 
             try
