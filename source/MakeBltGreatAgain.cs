@@ -878,6 +878,73 @@ public class BLTGuardModule : MBSubModuleBase
         }
     }
 
+    // Samodzielny refund za "!retinue clear" - fork zwraca poziom z KillRetinueAtIndex (int) i liczy
+    // zwrot z wlasnych kosztow tierow, ale oryginalny (niezmodyfikowany) DLL Randomchair22 ma
+    // KillRetinueAtIndex zwracajace void - nie da sie odczytac poziomu ani po fakcie. Zamiast tego
+    // czytamy CharacterObject.Tier jednostki PRZED usunieciem (Prefix) jako przyblizenie "poziomu"
+    // retinue, i liczymy zwrot z wlasnej (konfigurowalnej) tabeli kosztow tierow.
+    public class MBGARetinueRefundConfig
+    {
+        private const string ID = "MBGA - Retinue Refund";
+        internal static void Register() => ActionManager.RegisterGlobalConfigType(ID, typeof(MBGARetinueRefundConfig));
+        internal static MBGARetinueRefundConfig Get() => ActionManager.GetGlobalConfig<MBGARetinueRefundConfig>(ID);
+
+        [DisplayName("Enabled"), Description("Refund a fraction of gold spent when a retinue member is cleared with !retinue clear. Standalone re-implementation for an UNMODIFIED BLTAdoptAHero.dll (vanilla Randomchair22 build), since the exact gold spent isn't readable from outside - refund is estimated from the troop's own tier. Off by default: leave disabled if you're running the MesmerTurn fork, which already refunds this natively - enabling both would double the refund."), UsedImplicitly]
+        public bool Enabled { get; set; } = false;
+
+        [DisplayName("Refund Fraction"), Description("Fraction (0-1) of the estimated tier cost refunded on clear. 0.333 = a third, matching the original fork behavior."), UsedImplicitly]
+        public float RefundFraction { get; set; } = 0.333f;
+
+        [DisplayName("Cost Tier 1"), Description("Estimated gold cost for a Tier 1 retinue member (used only to compute the refund)."), UsedImplicitly]
+        public int CostTier1 { get; set; } = 25000;
+        [DisplayName("Cost Tier 2"), Description("Estimated gold cost for a Tier 2 retinue member."), UsedImplicitly]
+        public int CostTier2 { get; set; } = 50000;
+        [DisplayName("Cost Tier 3"), Description("Estimated gold cost for a Tier 3 retinue member."), UsedImplicitly]
+        public int CostTier3 { get; set; } = 100000;
+        [DisplayName("Cost Tier 4"), Description("Estimated gold cost for a Tier 4 retinue member."), UsedImplicitly]
+        public int CostTier4 { get; set; } = 175000;
+        [DisplayName("Cost Tier 5"), Description("Estimated gold cost for a Tier 5 retinue member."), UsedImplicitly]
+        public int CostTier5 { get; set; } = 275000;
+        [DisplayName("Cost Tier 6+"), Description("Estimated gold cost for a Tier 6 (or higher) retinue member."), UsedImplicitly]
+        public int CostTier6 { get; set; } = 400000;
+
+        internal int TotalCostUpToTier(int tier)
+        {
+            int[] costs = { CostTier1, CostTier2, CostTier3, CostTier4, CostTier5, CostTier6 };
+            int total = 0;
+            for (int i = 0; i < tier && i < costs.Length; i++) total += costs[i];
+            if (tier > costs.Length) total += (tier - costs.Length) * CostTier6;
+            return total;
+        }
+    }
+
+    [HarmonyPatch]
+    internal static class RetinueClearRefundPatch
+    {
+        [HarmonyPrefix]
+        [HarmonyPatch(typeof(BLTAdoptAHeroCampaignBehavior), "KillRetinueAtIndex")]
+        private static void KillRetinueAtIndexPrefix(Hero retinueOwnerHero, int index)
+        {
+            try
+            {
+                var cfg = MBGARetinueRefundConfig.Get();
+                if (cfg == null || !cfg.Enabled || retinueOwnerHero == null) return;
+
+                var troop = BLTAdoptAHeroCampaignBehavior.Current?.GetRetinue(retinueOwnerHero)?.ElementAtOrDefault(index);
+                if (troop == null) return;
+
+                int tier = Math.Max(0, troop.Tier);
+                int refund = (int)(cfg.TotalCostUpToTier(tier) * cfg.RefundFraction);
+                if (refund > 0)
+                    BLTAdoptAHeroCampaignBehavior.Current.ChangeHeroGold(retinueOwnerHero, refund);
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("RetinueClearRefundPatch.KillRetinueAtIndexPrefix failed", ex);
+            }
+        }
+    }
+
     // Patch aplikowany RĘCZNIE w BLTAurasModule.OnSubModuleLoad (NIE przez [HarmonyPatch]/PatchAll —
     // 9 modułów MBGA = 9× PatchAll = duplikaty patchy). Mnoży obrażenia szarży konnej gdy adrenalina aktywna.
     internal static class AdrenalineChargePatch
@@ -2119,6 +2186,7 @@ public class BLTAurasModule : MBSubModuleBase
             try { AdrenalineGlobalConfig.Register(); } catch (Exception ex) { Log.Exception("[Adrenaline] Register failed", ex); }
             try { HeroBarGlobalConfig.Register(); } catch (Exception ex) { Log.Exception("[HeroBar] Register failed", ex); }
             try { MBGATournamentLoadoutConfig.Register(); } catch (Exception ex) { Log.Exception("[TournamentLoadout] Register failed", ex); }
+            try { MBGARetinueRefundConfig.Register(); } catch (Exception ex) { Log.Exception("[RetinueRefund] Register failed", ex); }
         }
 
         protected override void OnSubModuleLoad()
