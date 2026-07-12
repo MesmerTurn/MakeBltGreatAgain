@@ -109,6 +109,7 @@ public class BLTFormationModule : MBSubModuleBase
 
     // ── !follow — włącz podążanie za streamerem ───────────────────────────────
     [DisplayName("FormationStrimer")]
+    [LocDescription("Summons your BLT hero into a formation next to the streamer during battle.")]
     public class FormationStreamerCommand : ICommandHandler
     {
         public Type HandlerConfigType => typeof(FormationSettings);
@@ -140,6 +141,7 @@ public class BLTFormationModule : MBSubModuleBase
 
     // ── !followhero — podążaj za innym BLT hero podczas bitwy ────────────────
     [DisplayName("FormationFollowHero")]
+    [LocDescription("Makes your summoned hero follow and fight alongside another summoned BLT hero during battle. Usage: !followhero @username")]
     public class FormationFollowHeroCommand : ICommandHandler
     {
         public Type HandlerConfigType => typeof(FollowHeroSettings);
@@ -197,6 +199,7 @@ public class BLTFormationModule : MBSubModuleBase
 
     // ── !follow off — wyłącz podążanie ───────────────────────────────────────
     [DisplayName("FormationStrimerOff")]
+    [LocDescription("Stops your hero from following the streamer's formation or another hero.")]
     public class FormationOffCommand : ICommandHandler
     {
         public class EmptyConfig { }
@@ -502,6 +505,7 @@ public class BLTGuardModule : MBSubModuleBase
     // ── !retreat — biegnij od najbliższego wroga, unikaj walki, ale nadal
     // można cię dogonić i zabić po drodze; !retreat off wraca do normalnego AI ──
     [DisplayName("Retreat")]
+    [LocDescription("Makes your summoned hero run away from the nearest enemy, avoiding combat (can still be caught and killed while fleeing). Use !retreat off to return to normal AI.")]
     public class RetreatCommand : ICommandHandler
     {
         public class RetreatConfig { }
@@ -622,6 +626,7 @@ public class BLTGuardModule : MBSubModuleBase
     }
 
     [DisplayName("Guard")]
+    [LocDescription("Makes your summoned hero guard and stay close to another summoned hero during battle, helping fend off attackers. Use !guard off to stop.")]
     public class GuardCommand : ICommandHandler
     {
         public class GuardConfig { }
@@ -1076,6 +1081,7 @@ public class BLTGuardModule : MBSubModuleBase
         internal string GetChatTitle(int level) => level <= 0 ? "" : string.Concat(Enumerable.Repeat(ChatTitleSymbol, level));
     }
 
+    [LocDescription("Resets your hero to a higher Prestige level once you meet the equipment tier and kill requirements, granting permanent HP/damage/armor bonuses. Standalone MBGA version - disabled by default, see \"MBGA - Prestige\" in Global Configs.")]
     public class MBGAPrestigeCommand : ICommandHandler
     {
         public class Settings { }
@@ -1329,6 +1335,7 @@ public class BLTGuardModule : MBSubModuleBase
         }
     }
 
+    [LocDescription("Buys clan upgrades from a configurable catalog (party size/speed bonuses). Usage: !mbgaupgrade list | buy <id> | status. Standalone MBGA version - disabled by default, see \"MBGA - Upgrade Catalog\" in Global Configs.")]
     public class MBGAUpgradeCommand : ICommandHandler
     {
         public class Settings { }
@@ -1492,6 +1499,7 @@ public class BLTGuardModule : MBSubModuleBase
         public float Tier8HealthMultiplier { get; set; } = 2f;
     }
 
+    [LocDescription("Advances a hero already at max equipment tier to Tier 7 (Elite) or Tier 8 (Legendary) for gold, granting HP/damage/armor multipliers. Standalone MBGA version - disabled by default, see \"MBGA - Tier 7-8 Progression\" in Global Configs.")]
     public class MBGATierUpCommand : ICommandHandler
     {
         public class Settings { }
@@ -1680,6 +1688,7 @@ public class BLTUpgradeModule : MBSubModuleBase
     // ════════════════════════════════════════════════════════════════════════════
 
     [DisplayName("UpgradeClanCommand")]
+    [LocDescription("Automatically buys every affordable clan-level upgrade your hero's clan is missing.")]
     public class UpgradeClanCommand : ICommandHandler
     {
         public Type HandlerConfigType => typeof(UpgradeSettings);
@@ -1711,6 +1720,7 @@ public class BLTUpgradeModule : MBSubModuleBase
     // ════════════════════════════════════════════════════════════════════════════
 
     [DisplayName("UpgradeFiefCommand")]
+    [LocDescription("Automatically buys every affordable fief/settlement-level upgrade available to your hero's clan.")]
     public class UpgradeFiefCommand : ICommandHandler
     {
         public Type HandlerConfigType => typeof(UpgradeSettings);
@@ -1742,6 +1752,7 @@ public class BLTUpgradeModule : MBSubModuleBase
     // ════════════════════════════════════════════════════════════════════════════
 
     [DisplayName("UpgradeKingdomCommand")]
+    [LocDescription("Automatically buys every affordable kingdom-level upgrade available to your hero's clan (requires the clan to be in a kingdom).")]
     public class UpgradeKingdomCommand : ICommandHandler
     {
         public Type HandlerConfigType => typeof(UpgradeSettings);
@@ -2051,6 +2062,7 @@ public class BLTDuelModule : MBSubModuleBase
     // ════════════════════════════════════════════════════════════════════════════
 
     [DisplayName("Duel")]
+    [LocDescription("Challenges another viewer's summoned BLT hero to a 1v1 duel during battle. Usage: !duel @username")]
     public class DuelCommand : ICommandHandler
     {
         public class DuelSettings { }
@@ -6962,6 +6974,7 @@ public class BLTAurasModule : MBSubModuleBase
 
     [DisplayName("Power Tier Info"),
      Description("Shows the viewer's current power progression tier"),
+     LocDescription("Shows the viewer's current power progression tier and kills/battles needed for the next one."),
      UsedImplicitly]
     internal class PowerTierCommand : ICommandHandler
     {
@@ -7407,6 +7420,7 @@ public class BLTAurasModule : MBSubModuleBase
     // Shaman, Vampire Counts Necromancer) instead of a random one, using the same
     // adoption finalization as the normal !adopt flow (InitAdoptedHero).
     // ════════════════════════════════════════════════════════════════════════════
+    [LocDescription("Adopts a hero using a specific The Old Realms archetype (culture + subtype) instead of a random one, e.g. a Greenskins Shaman or Vampire Counts Necromancer. Usage: !adoptbytor <culture> <subtype>")]
     public class AdoptByTorCommand : ICommandHandler
     {
         public class Settings { }
@@ -7509,6 +7523,7 @@ public class BLTAurasModule : MBSubModuleBase
     // (some lingering native death state); spawning a fresh Hero and transplanting the BLT data
     // onto it sidesteps that entirely. Usable as a chat command or a channel points reward.
     [DisplayName("Reborn")]
+    [LocDescription("Brings back your fallen hero as a brand new character, inheriting gold, retinue, class, custom items, and kill/battle stats - everything except the death itself. Usable as a chat command or a channel points reward.")]
     public class RebornCommand : ICommandHandler, IRewardHandler
     {
         public class Settings
@@ -7617,6 +7632,7 @@ public class BLTAurasModule : MBSubModuleBase
         }
     }
 
+    [LocDescription("Manages hired Wanderer companions for your hero: hire a random one, list yours, or check status. Wanderers roll a random passive power on hire and grow their own Tier from kills/battles. Usage: !wanderer hire | list | info")]
     public class WandererCommand : ICommandHandler
     {
         public class Settings { }
