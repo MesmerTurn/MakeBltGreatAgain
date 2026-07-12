@@ -2201,7 +2201,7 @@ public class BLTAurasModule : MBSubModuleBase
         [DisplayName("Show Poison Contour"), UsedImplicitly]
         public bool ShowPoisonContour { get; set; } = true;
 
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly]
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly]
         public string PoisonContourColor { get; set; } = "FF00CC00";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
@@ -2375,13 +2375,13 @@ public class BLTAurasModule : MBSubModuleBase
         [DisplayName("HP Trigger Threshold (%)"), UsedImplicitly]
         public float TriggerHpPercent { get; set; } = 20f;
 
-        [DisplayName("Damage Bonus (%)"), UsedImplicitly]
+        [DisplayName("Damage Bonus (%)"), Description("Percentage bonus added to damage dealt while this effect is active."), UsedImplicitly]
         public float DamageBonusPercent { get; set; } = 100f;
 
-        [DisplayName("Damage Reduction (%)"), UsedImplicitly]
+        [DisplayName("Damage Reduction (%)"), Description("Percentage reduction applied to incoming damage while this effect is active."), UsedImplicitly]
         public float DamageReductionPercent { get; set; } = 50f;
 
-        [DisplayName("Duration (seconds)"), UsedImplicitly]
+        [DisplayName("Duration (seconds)"), Description("How long (in seconds) this effect lasts once triggered."), UsedImplicitly]
         public float DurationSeconds { get; set; } = 10f;
 
         [DisplayName("Once Per Battle"), UsedImplicitly]
@@ -2544,10 +2544,10 @@ public class BLTAurasModule : MBSubModuleBase
         [DisplayName("Heal Contour Color (hex AARRGGBB)"), UsedImplicitly]
         public string HealContourColor { get; set; } = "FF00FF44";
 
-        [DisplayName("Tick Interval (seconds)"), UsedImplicitly]
+        [DisplayName("Tick Interval (seconds)"), Description("How often (in seconds) this effect re-evaluates and re-applies to nearby agents."), UsedImplicitly]
         public float TickIntervalSeconds { get; set; } = 3f;
 
-        [DisplayName("Max Agents Per Tick"), UsedImplicitly]
+        [DisplayName("Max Agents Per Tick"), Description("Caps how many nearby agents this effect can hit per tick, closest first - keeps performance in check in large battles."), UsedImplicitly]
         public int MaxAgentsPerTick { get; set; } = 8;
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
@@ -2635,10 +2635,10 @@ public class BLTAurasModule : MBSubModuleBase
         [DisplayName("Damage Contour Color (hex AARRGGBB)"), UsedImplicitly]
         public string DamageContourColor { get; set; } = "FFFF2200";
 
-        [DisplayName("Max Agents Per Tick"), UsedImplicitly]
+        [DisplayName("Max Agents Per Tick"), Description("Caps how many nearby agents this effect can hit per tick, closest first - keeps performance in check in large battles."), UsedImplicitly]
         public int MaxAgentsPerTick { get; set; } = 5;
 
-        [DisplayName("Tick Interval (seconds)"), UsedImplicitly]
+        [DisplayName("Tick Interval (seconds)"), Description("How often (in seconds) this effect re-evaluates and re-applies to nearby agents."), UsedImplicitly]
         public float TickIntervalSeconds { get; set; } = 3f;
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
@@ -2731,11 +2731,11 @@ public class BLTAurasModule : MBSubModuleBase
 
         public class CommanderAuraSettings
         {
-            [DisplayName("Damage Bonus (%)"), UsedImplicitly] public float DamageBonusPercent { get; set; } = 25f;
+            [DisplayName("Damage Bonus (%)"), Description("Percentage bonus added to damage dealt while this effect is active."), UsedImplicitly] public float DamageBonusPercent { get; set; } = 25f;
             [DisplayName("Armor Bonus (%)"), UsedImplicitly] public float ArmorBonusPercent { get; set; } = 20f;
             [DisplayName("Speed Bonus (%)"), UsedImplicitly] public float SpeedBonusPercent { get; set; } = 15f;
             [DisplayName("Aura Range (meters)"), UsedImplicitly] public float Range { get; set; } = 20f;
-            [DisplayName("Duration (seconds)"), UsedImplicitly] public float DurationSeconds { get; set; } = 60f;
+            [DisplayName("Duration (seconds)"), Description("How long (in seconds) this effect lasts once triggered."), UsedImplicitly] public float DurationSeconds { get; set; } = 60f;
             [DisplayName("Gold Cost"), UsedImplicitly] public int GoldCost { get; set; } = 0;
         }
 
@@ -2804,17 +2804,17 @@ public class BLTAurasModule : MBSubModuleBase
         [DisplayName("Aura Range (m)"), UsedImplicitly] public float AuraRange { get; set; } = 8f;
         [DisplayName("Speed Slow (%)"), UsedImplicitly] public float SpeedSlowPercent { get; set; } = 40f;
         [DisplayName("Attack Speed Slow (%)"), UsedImplicitly] public float AttackSlowPercent { get; set; } = 30f;
-        [DisplayName("Tick Interval (seconds)"), UsedImplicitly] public float TickInterval { get; set; } = 3f;
-        [DisplayName("Max Agents Per Tick"), UsedImplicitly] public int MaxAgentsPerTick { get; set; } = 5;
+        [DisplayName("Tick Interval (seconds)"), Description("How often (in seconds) this effect re-evaluates and re-applies to nearby agents."), UsedImplicitly] public float TickInterval { get; set; } = 3f;
+        [DisplayName("Max Agents Per Tick"), Description("Caps how many nearby agents this effect can hit per tick, closest first - keeps performance in check in large battles."), UsedImplicitly] public int MaxAgentsPerTick { get; set; } = 5;
         [DisplayName("Dismount Enabled"), UsedImplicitly] public bool DismountEnabled { get; set; } = true;
         [DisplayName("Dismount Chance Per Tick (%)"), UsedImplicitly] public float DismountChancePercent { get; set; } = 20f;
         [DisplayName("Knockdown Enabled"), UsedImplicitly] public bool KnockdownEnabled { get; set; } = true;
         [DisplayName("Knockdown Chance Per Tick (%)"), UsedImplicitly] public float KnockdownChancePercent { get; set; } = 10f;
         [DisplayName("Weapon Drop Enabled"), UsedImplicitly] public bool WeaponDropEnabled { get; set; } = true;
         [DisplayName("Weapon Drop Chance Per Tick (%)"), UsedImplicitly] public float WeaponDropChancePercent { get; set; } = 5f;
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FF8800FF";
-        [DisplayName("Show Message"), UsedImplicitly] public bool ShowMessage { get; set; } = true;
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FF8800FF";
+        [DisplayName("Show Message"), Description("Whether to post a chat/feed message when this effect triggers."), UsedImplicitly] public bool ShowMessage { get; set; } = true;
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -2988,14 +2988,14 @@ public class BLTAurasModule : MBSubModuleBase
     public class BuffAuraPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
     {
         [DisplayName("Aura Range (m)"), UsedImplicitly] public float AuraRange { get; set; } = 10f;
-        [DisplayName("Damage Bonus (%)"), UsedImplicitly] public float DamageBonusPercent { get; set; } = 20f;
+        [DisplayName("Damage Bonus (%)"), Description("Percentage bonus added to damage dealt while this effect is active."), UsedImplicitly] public float DamageBonusPercent { get; set; } = 20f;
         [DisplayName("Armor Bonus (%)"), UsedImplicitly] public float ArmorBonusPercent { get; set; } = 20f;
         [DisplayName("Move Speed Bonus (%)"), UsedImplicitly] public float MoveSpeedBonusPercent { get; set; } = 15f;
         [DisplayName("Attack Speed Bonus (%)"), UsedImplicitly] public float AttackSpeedBonusPercent { get; set; } = 15f;
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFFFD700";
-        [DisplayName("Tick Interval (seconds)"), UsedImplicitly] public float TickIntervalSeconds { get; set; } = 3f;
-        [DisplayName("Max Agents Per Tick"), UsedImplicitly] public int MaxAgentsPerTick { get; set; } = 8;
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FFFFD700";
+        [DisplayName("Tick Interval (seconds)"), Description("How often (in seconds) this effect re-evaluates and re-applies to nearby agents."), UsedImplicitly] public float TickIntervalSeconds { get; set; } = 3f;
+        [DisplayName("Max Agents Per Tick"), Description("Caps how many nearby agents this effect can hit per tick, closest first - keeps performance in check in large battles."), UsedImplicitly] public int MaxAgentsPerTick { get; set; } = 8;
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -3144,12 +3144,12 @@ public class BLTAurasModule : MBSubModuleBase
 
         public class BuffRewardSettings
         {
-            [DisplayName("Damage Bonus (%)"), UsedImplicitly] public float DamageBonusPercent { get; set; } = 30f;
+            [DisplayName("Damage Bonus (%)"), Description("Percentage bonus added to damage dealt while this effect is active."), UsedImplicitly] public float DamageBonusPercent { get; set; } = 30f;
             [DisplayName("Armor Bonus (%)"), UsedImplicitly] public float ArmorBonusPercent { get; set; } = 20f;
             [DisplayName("Speed Bonus (%)"), UsedImplicitly] public float SpeedBonusPercent { get; set; } = 20f;
-            [DisplayName("Duration (seconds)"), UsedImplicitly] public float DurationSeconds { get; set; } = 30f;
+            [DisplayName("Duration (seconds)"), Description("How long (in seconds) this effect lasts once triggered."), UsedImplicitly] public float DurationSeconds { get; set; } = 30f;
             [DisplayName("Gold Cost"), UsedImplicitly] public int GoldCost { get; set; } = 0;
-            [DisplayName("Show Message"), UsedImplicitly] public bool ShowMessage { get; set; } = true;
+            [DisplayName("Show Message"), Description("Whether to post a chat/feed message when this effect triggers."), UsedImplicitly] public bool ShowMessage { get; set; } = true;
         }
 
         public void Enqueue(ReplyContext context, object config)
@@ -3199,9 +3199,9 @@ public class BLTAurasModule : MBSubModuleBase
             [DisplayName("Search Range (m)"), UsedImplicitly] public float SearchRange { get; set; } = 80f;
             [DisplayName("Offset Distance (m)"), UsedImplicitly] public float OffsetDistance { get; set; } = 2f;
             [DisplayName("Gold Cost"), UsedImplicitly] public int GoldCost { get; set; } = 0;
-            [DisplayName("Show Message"), UsedImplicitly] public bool ShowMessage { get; set; } = true;
+            [DisplayName("Show Message"), Description("Whether to post a chat/feed message when this effect triggers."), UsedImplicitly] public bool ShowMessage { get; set; } = true;
             [DisplayName("Splash Damage On Enemy Teleport"), UsedImplicitly] public int SplashDamage { get; set; } = 20;
-            [DisplayName("Splash Radius (m)"), UsedImplicitly] public float SplashRadius { get; set; } = 3f;
+            [DisplayName("Splash Radius (m)"), Description("Radius in meters of the splash/area effect around the impact point."), UsedImplicitly] public float SplashRadius { get; set; } = 3f;
         }
 
         public void Enqueue(ReplyContext context, object config)
@@ -3246,9 +3246,9 @@ public class BLTAurasModule : MBSubModuleBase
         [DisplayName("Offset Distance (m)"), UsedImplicitly] public float OffsetDistance { get; set; } = 2f;
         [DisplayName("Only When In Danger"), UsedImplicitly] public bool OnlyWhenInDanger { get; set; } = false;
         [DisplayName("Danger HP Threshold (%)"), UsedImplicitly] public float DangerHpPercent { get; set; } = 30f;
-        [DisplayName("Show Message"), UsedImplicitly] public bool ShowMessage { get; set; } = true;
+        [DisplayName("Show Message"), Description("Whether to post a chat/feed message when this effect triggers."), UsedImplicitly] public bool ShowMessage { get; set; } = true;
         [DisplayName("Splash Damage On Enemy Teleport"), UsedImplicitly] public int SplashDamage { get; set; } = 20;
-        [DisplayName("Splash Radius (m)"), UsedImplicitly] public float SplashRadius { get; set; } = 3f;
+        [DisplayName("Splash Radius (m)"), Description("Radius in meters of the splash/area effect around the impact point."), UsedImplicitly] public float SplashRadius { get; set; } = 3f;
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -3350,10 +3350,10 @@ public class BLTAurasModule : MBSubModuleBase
      UsedImplicitly]
     public class JumpAttackPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
     {
-        [DisplayName("Cooldown (seconds)"), UsedImplicitly] public float CooldownSeconds { get; set; } = 8f;
+        [DisplayName("Cooldown (seconds)"), Description("Minimum time (in seconds) between activations of this effect."), UsedImplicitly] public float CooldownSeconds { get; set; } = 8f;
         [DisplayName("Detection Range (m)"), UsedImplicitly] public float DetectionRange { get; set; } = 6f;
         [DisplayName("Base Damage"), UsedImplicitly] public int BaseDamage { get; set; } = 30;
-        [DisplayName("Damage Bonus (%)"), UsedImplicitly] public float DamageBonusPercent { get; set; } = 50f;
+        [DisplayName("Damage Bonus (%)"), Description("Percentage bonus added to damage dealt while this effect is active."), UsedImplicitly] public float DamageBonusPercent { get; set; } = 50f;
         [DisplayName("Knockback Enabled"), UsedImplicitly] public bool KnockbackEnabled { get; set; } = true;
         [DisplayName("Knockback Distance (m)"), UsedImplicitly] public float KnockbackDistance { get; set; } = 3f;
 
@@ -3423,12 +3423,12 @@ public class BLTAurasModule : MBSubModuleBase
      UsedImplicitly]
     public class KickPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
     {
-        [DisplayName("Cooldown (seconds)"), UsedImplicitly] public float CooldownSeconds { get; set; } = 6f;
+        [DisplayName("Cooldown (seconds)"), Description("Minimum time (in seconds) between activations of this effect."), UsedImplicitly] public float CooldownSeconds { get; set; } = 6f;
         [DisplayName("Kick Range (m)"), UsedImplicitly] public float KickRange { get; set; } = 2.5f;
         [DisplayName("Damage"), UsedImplicitly] public int Damage { get; set; } = 20;
         [DisplayName("Knockback Distance (m)"), UsedImplicitly] public float KnockbackDistance { get; set; } = 4f;
         [DisplayName("Use Left Leg"), UsedImplicitly] public bool UseLeftLeg { get; set; } = false;
-        [DisplayName("Show Message"), UsedImplicitly] public bool ShowMessage { get; set; } = false;
+        [DisplayName("Show Message"), Description("Whether to post a chat/feed message when this effect triggers."), UsedImplicitly] public bool ShowMessage { get; set; } = false;
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -3500,8 +3500,8 @@ public class BLTAurasModule : MBSubModuleBase
         [DisplayName("Fire Damage Per Tick"), UsedImplicitly] public int FireDamagePerTick { get; set; } = 12;
         [DisplayName("Burn Duration (ticks)"), UsedImplicitly] public int BurnDurationTicks { get; set; } = 4;
         [DisplayName("Refresh On Hit"), UsedImplicitly] public bool RefreshOnHit { get; set; } = true;
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFFF4400";
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FFFF4400";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -3588,8 +3588,8 @@ public class BLTAurasModule : MBSubModuleBase
         [DisplayName("Slow Speed Limit"), UsedImplicitly] public float SlowSpeedLimit { get; set; } = 0.4f;
         [DisplayName("Frost Duration (ticks)"), UsedImplicitly] public int FrostDurationTicks { get; set; } = 4;
         [DisplayName("Apply On"), UsedImplicitly] public PoisonApplyOn ApplyOn { get; set; } = PoisonApplyOn.Both;
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FF00AAFF";
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FF00AAFF";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -3662,7 +3662,7 @@ public class BLTAurasModule : MBSubModuleBase
     {
         [DisplayName("Lifesteal (%)"), UsedImplicitly] public float LifestealPercent { get; set; } = 20f;
         [DisplayName("Show Contour On Victim"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FF880088";
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FF880088";
         [DisplayName("Contour Duration (ticks)"), UsedImplicitly] public int ContourDurationTicks { get; set; } = 2;
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
@@ -3722,10 +3722,10 @@ public class BLTAurasModule : MBSubModuleBase
     public class ChainLightningPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
     {
         [DisplayName("Chain Damage"), UsedImplicitly] public int ChainDamage { get; set; } = 25;
-        [DisplayName("Chain Radius"), UsedImplicitly] public float ChainRadius { get; set; } = 5f;
+        [DisplayName("Chain Radius"), Description("How far (in meters) the effect can jump/chain from one target to the next."), UsedImplicitly] public float ChainRadius { get; set; } = 5f;
         [DisplayName("Max Targets"), UsedImplicitly] public int MaxTargets { get; set; } = 3;
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFFFFF00";
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FFFFFF00";
         [DisplayName("Contour Duration (ticks)"), UsedImplicitly] public int ContourDurationTicks { get; set; } = 1;
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
@@ -3810,8 +3810,8 @@ public class BLTAurasModule : MBSubModuleBase
         [DisplayName("Bleed Duration (ticks)"), UsedImplicitly] public int BleedDurationTicks { get; set; } = 6;
         [DisplayName("Max Stacks"), UsedImplicitly] public int MaxStacks { get; set; } = 5;
         [DisplayName("Apply On"), UsedImplicitly] public PoisonApplyOn ApplyOn { get; set; } = PoisonApplyOn.MeleeOnly;
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFAA0000";
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FFAA0000";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -3887,13 +3887,13 @@ public class BLTAurasModule : MBSubModuleBase
      UsedImplicitly]
     public class FearAuraPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
     {
-        [DisplayName("Aura Radius"), UsedImplicitly] public float Radius { get; set; } = 6f;
+        [DisplayName("Aura Radius"), Description("How far from the hero (in meters) this aura reaches."), UsedImplicitly] public float Radius { get; set; } = 6f;
         [DisplayName("Fear Chance Per Tick (%)"), UsedImplicitly] public float FearChancePercent { get; set; } = 15f;
         [DisplayName("Fear Tick Interval (seconds)"), UsedImplicitly] public float FearTickInterval { get; set; } = 3f;
-        [DisplayName("Max Agents Per Tick"), UsedImplicitly] public int MaxAgentsPerTick { get; set; } = 5;
+        [DisplayName("Max Agents Per Tick"), Description("Caps how many nearby agents this effect can hit per tick, closest first - keeps performance in check in large battles."), UsedImplicitly] public int MaxAgentsPerTick { get; set; } = 5;
         [DisplayName("Contour Update Interval (seconds)"), UsedImplicitly] public float ContourUpdateInterval { get; set; } = 0.5f;
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FF440044";
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FF440044";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -3987,12 +3987,12 @@ public class BLTAurasModule : MBSubModuleBase
      UsedImplicitly]
     public class SlowAuraPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
     {
-        [DisplayName("Aura Radius"), UsedImplicitly] public float Radius { get; set; } = 5f;
+        [DisplayName("Aura Radius"), Description("How far from the hero (in meters) this aura reaches."), UsedImplicitly] public float Radius { get; set; } = 5f;
         [DisplayName("Slow Speed Limit"), UsedImplicitly] public float SlowSpeedLimit { get; set; } = 0.5f;
-        [DisplayName("Tick Interval (seconds)"), UsedImplicitly] public float UpdateInterval { get; set; } = 3f;
-        [DisplayName("Max Agents Per Tick"), UsedImplicitly] public int MaxAgentsPerTick { get; set; } = 5;
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FF00FFCC";
+        [DisplayName("Tick Interval (seconds)"), Description("How often (in seconds) this effect re-evaluates and re-applies to nearby agents."), UsedImplicitly] public float UpdateInterval { get; set; } = 3f;
+        [DisplayName("Max Agents Per Tick"), Description("Caps how many nearby agents this effect can hit per tick, closest first - keeps performance in check in large battles."), UsedImplicitly] public int MaxAgentsPerTick { get; set; } = 5;
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FF00FFCC";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -4065,12 +4065,12 @@ public class BLTAurasModule : MBSubModuleBase
      UsedImplicitly]
     public class WeaknessAuraPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
     {
-        [DisplayName("Aura Radius"), UsedImplicitly] public float Radius { get; set; } = 6f;
-        [DisplayName("Damage Reduction (%)"), UsedImplicitly] public float DamageReductionPercent { get; set; } = 30f;
-        [DisplayName("Tick Interval (seconds)"), UsedImplicitly] public float UpdateInterval { get; set; } = 3f;
-        [DisplayName("Max Agents Per Tick"), UsedImplicitly] public int MaxAgentsPerTick { get; set; } = 5;
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FF888888";
+        [DisplayName("Aura Radius"), Description("How far from the hero (in meters) this aura reaches."), UsedImplicitly] public float Radius { get; set; } = 6f;
+        [DisplayName("Damage Reduction (%)"), Description("Percentage reduction applied to incoming damage while this effect is active."), UsedImplicitly] public float DamageReductionPercent { get; set; } = 30f;
+        [DisplayName("Tick Interval (seconds)"), Description("How often (in seconds) this effect re-evaluates and re-applies to nearby agents."), UsedImplicitly] public float UpdateInterval { get; set; } = 3f;
+        [DisplayName("Max Agents Per Tick"), Description("Caps how many nearby agents this effect can hit per tick, closest first - keeps performance in check in large battles."), UsedImplicitly] public int MaxAgentsPerTick { get; set; } = 5;
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FF888888";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -4149,12 +4149,12 @@ public class BLTAurasModule : MBSubModuleBase
      UsedImplicitly]
     public class BattleCryAuraPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
     {
-        [DisplayName("Aura Radius"), UsedImplicitly] public float Radius { get; set; } = 8f;
+        [DisplayName("Aura Radius"), Description("How far from the hero (in meters) this aura reaches."), UsedImplicitly] public float Radius { get; set; } = 8f;
         [DisplayName("Speed Boost Multiplier"), UsedImplicitly] public float SpeedBoostMultiplier { get; set; } = 1.3f;
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFFFAA00";
-        [DisplayName("Tick Interval (seconds)"), UsedImplicitly] public float TickIntervalSeconds { get; set; } = 3f;
-        [DisplayName("Max Agents Per Tick"), UsedImplicitly] public int MaxAgentsPerTick { get; set; } = 8;
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FFFFAA00";
+        [DisplayName("Tick Interval (seconds)"), Description("How often (in seconds) this effect re-evaluates and re-applies to nearby agents."), UsedImplicitly] public float TickIntervalSeconds { get; set; } = 3f;
+        [DisplayName("Max Agents Per Tick"), Description("Caps how many nearby agents this effect can hit per tick, closest first - keeps performance in check in large battles."), UsedImplicitly] public int MaxAgentsPerTick { get; set; } = 8;
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -4231,8 +4231,8 @@ public class BLTAurasModule : MBSubModuleBase
         [DisplayName("Damage Bonus Per Stack (%)"), UsedImplicitly] public float DamageBonusPerStack { get; set; } = 10f;
         [DisplayName("Max Stacks"), UsedImplicitly] public int MaxStacks { get; set; } = 8;
         [DisplayName("Stack Duration (ticks)"), UsedImplicitly] public int StackDurationTicks { get; set; } = 5;
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFFF4400";
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FFFF4400";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -4308,7 +4308,7 @@ public class BLTAurasModule : MBSubModuleBase
     {
         [DisplayName("Trigger Damage Threshold"), UsedImplicitly] public int TriggerDamageThreshold { get; set; } = 20;
         [DisplayName("Counter Damage Multiplier"), UsedImplicitly] public float CounterDamageMultiplier { get; set; } = 1.5f;
-        [DisplayName("Cooldown (seconds)"), UsedImplicitly] public float CooldownSeconds { get; set; } = 5f;
+        [DisplayName("Cooldown (seconds)"), Description("Minimum time (in seconds) between activations of this effect."), UsedImplicitly] public float CooldownSeconds { get; set; } = 5f;
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -4362,7 +4362,7 @@ public class BLTAurasModule : MBSubModuleBase
      UsedImplicitly]
     public class ShadowstepPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
     {
-        [DisplayName("Cooldown (seconds)"), UsedImplicitly] public float CooldownSeconds { get; set; } = 10f;
+        [DisplayName("Cooldown (seconds)"), Description("Minimum time (in seconds) between activations of this effect."), UsedImplicitly] public float CooldownSeconds { get; set; } = 10f;
         [DisplayName("Max Range"), UsedImplicitly] public float MaxRange { get; set; } = 30f;
         [DisplayName("Behind Distance"), UsedImplicitly] public float BehindDistance { get; set; } = 1.5f;
 
@@ -4415,11 +4415,11 @@ public class BLTAurasModule : MBSubModuleBase
      UsedImplicitly]
     public class IronSkinPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
     {
-        [DisplayName("Damage Reduction (%)"), UsedImplicitly] public float DamageReductionPercent { get; set; } = 50f;
+        [DisplayName("Damage Reduction (%)"), Description("Percentage reduction applied to incoming damage while this effect is active."), UsedImplicitly] public float DamageReductionPercent { get; set; } = 50f;
         [DisplayName("Active Duration (seconds)"), UsedImplicitly] public float ActiveDurationSeconds { get; set; } = 4f;
-        [DisplayName("Cooldown (seconds)"), UsedImplicitly] public float CooldownSeconds { get; set; } = 15f;
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFC0C0C0";
+        [DisplayName("Cooldown (seconds)"), Description("Minimum time (in seconds) between activations of this effect."), UsedImplicitly] public float CooldownSeconds { get; set; } = 15f;
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FFC0C0C0";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -4487,8 +4487,8 @@ public class BLTAurasModule : MBSubModuleBase
     {
         [DisplayName("Bonus Damage"), UsedImplicitly] public int BonusDamage { get; set; } = 20;
         [DisplayName("Stun Duration (seconds)"), UsedImplicitly] public float StunDuration { get; set; } = 1.5f;
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFFFFF00";
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FFFFFF00";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -4530,10 +4530,10 @@ public class BLTAurasModule : MBSubModuleBase
      UsedImplicitly]
     public class ShieldWallPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
     {
-        [DisplayName("Cooldown (seconds)"), UsedImplicitly] public float CooldownSeconds { get; set; } = 30f;
+        [DisplayName("Cooldown (seconds)"), Description("Minimum time (in seconds) between activations of this effect."), UsedImplicitly] public float CooldownSeconds { get; set; } = 30f;
         [DisplayName("Invulnerability Duration (seconds)"), UsedImplicitly] public float InvulnerabilitySeconds { get; set; } = 3f;
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFC0C0C0";
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FFC0C0C0";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -4597,8 +4597,8 @@ public class BLTAurasModule : MBSubModuleBase
     {
         [DisplayName("HP Trigger Threshold (%)"), UsedImplicitly] public float TriggerPercent { get; set; } = 25f;
         [DisplayName("Heal Amount (%)"), UsedImplicitly] public float HealPercent { get; set; } = 50f;
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FF00FF88";
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FF00FF88";
         [DisplayName("Contour Duration (seconds)"), UsedImplicitly] public float ContourDuration { get; set; } = 3f;
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
@@ -4662,8 +4662,8 @@ public class BLTAurasModule : MBSubModuleBase
     {
         [DisplayName("Dodge Chance (%)"), UsedImplicitly] public float DodgeChancePercent { get; set; } = 20f;
         [DisplayName("Cooldown Between Dodges (seconds)"), UsedImplicitly] public float CooldownSeconds { get; set; } = 5f;
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FF00CFFF";
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FF00CFFF";
         [DisplayName("Contour Duration (seconds)"), UsedImplicitly] public float ContourDuration { get; set; } = 0.5f;
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
@@ -4729,8 +4729,8 @@ public class BLTAurasModule : MBSubModuleBase
     public class BackstabPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
     {
         [DisplayName("Bonus Damage Multiplier (%)"), UsedImplicitly] public float BonusPercent { get; set; } = 100f;
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FF440044";
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FF440044";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -4777,8 +4777,8 @@ public class BLTAurasModule : MBSubModuleBase
     {
         [DisplayName("Target HP Threshold (%)"), UsedImplicitly] public float ThresholdPercent { get; set; } = 20f;
         [DisplayName("Bonus Damage Multiplier (%)"), UsedImplicitly] public float BonusPercent { get; set; } = 150f;
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFAA0000";
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FFAA0000";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -4820,12 +4820,12 @@ public class BLTAurasModule : MBSubModuleBase
      UsedImplicitly]
     public class ShockwavePower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
     {
-        [DisplayName("Radius (meters)"), UsedImplicitly] public float Radius { get; set; } = 6f;
+        [DisplayName("Radius (meters)"), Description("Effect radius in meters."), UsedImplicitly] public float Radius { get; set; } = 6f;
         [DisplayName("Knockback Force"), UsedImplicitly] public float KnockbackForce { get; set; } = 8f;
         [DisplayName("Damage"), UsedImplicitly] public int Damage { get; set; } = 15;
-        [DisplayName("Cooldown (seconds)"), UsedImplicitly] public float CooldownSeconds { get; set; } = 12f;
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FF8800FF";
+        [DisplayName("Cooldown (seconds)"), Description("Minimum time (in seconds) between activations of this effect."), UsedImplicitly] public float CooldownSeconds { get; set; } = 12f;
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FF8800FF";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -4887,10 +4887,10 @@ public class BLTAurasModule : MBSubModuleBase
      UsedImplicitly]
     public class WarBannerPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
     {
-        [DisplayName("Aura Radius (meters)"), UsedImplicitly] public float Radius { get; set; } = 12f;
+        [DisplayName("Aura Radius (meters)"), Description("How far from the hero (in meters) this aura reaches."), UsedImplicitly] public float Radius { get; set; } = 12f;
         [DisplayName("Speed Multiplier"), UsedImplicitly] public float SpeedMult { get; set; } = 1.2f;
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFFFDD00";
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FFFFDD00";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -4949,10 +4949,10 @@ public class BLTAurasModule : MBSubModuleBase
      UsedImplicitly]
     public class MarkTargetPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
     {
-        [DisplayName("Mark Radius (meters)"), UsedImplicitly] public float Radius { get; set; } = 8f;
+        [DisplayName("Mark Radius (meters)"), Description("How far from the hero (in meters) enemies get marked by this effect."), UsedImplicitly] public float Radius { get; set; } = 8f;
         [DisplayName("Bonus Damage Multiplier (%)"), UsedImplicitly] public float BonusPercent { get; set; } = 30f;
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFFF4400";
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FFFF4400";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -5014,10 +5014,10 @@ public class BLTAurasModule : MBSubModuleBase
     public class RallyingCryPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
     {
         [DisplayName("Heal Amount"), UsedImplicitly] public int HealAmount { get; set; } = 40;
-        [DisplayName("Radius (meters)"), UsedImplicitly] public float Radius { get; set; } = 15f;
+        [DisplayName("Radius (meters)"), Description("Effect radius in meters."), UsedImplicitly] public float Radius { get; set; } = 15f;
         [DisplayName("HP Trigger Threshold (%)"), UsedImplicitly] public float TriggerPercent { get; set; } = 30f;
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FF00FF44";
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FF00FF44";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -5101,8 +5101,8 @@ public class BLTAurasModule : MBSubModuleBase
         public string Effect { get; set; } = "Damage";
 
         [DisplayName("Range (meters)"), UsedImplicitly] public float Range { get; set; } = 8f;
-        [DisplayName("Tick Interval (seconds)"), UsedImplicitly] public float TickIntervalSeconds { get; set; } = 3f;
-        [DisplayName("Max Agents Per Tick"), UsedImplicitly] public int MaxAgentsPerTick { get; set; } = 8;
+        [DisplayName("Tick Interval (seconds)"), Description("How often (in seconds) this effect re-evaluates and re-applies to nearby agents."), UsedImplicitly] public float TickIntervalSeconds { get; set; } = 3f;
+        [DisplayName("Max Agents Per Tick"), Description("Caps how many nearby agents this effect can hit per tick, closest first - keeps performance in check in large battles."), UsedImplicitly] public int MaxAgentsPerTick { get; set; } = 8;
 
         [DisplayName("Magnitude"), UsedImplicitly,
          Description("Meaning depends on Effect: Damage/Heal/Shockwave/RallyingCry=HP, Curse/Fear/Slow/Weakness/Buff/BattleCry=% stat modifier, MarkTarget=bonus damage %")]
@@ -5111,8 +5111,8 @@ public class BLTAurasModule : MBSubModuleBase
         [DisplayName("RallyingCry HP Trigger (%)"), Description("Only used when Effect=RallyingCry: triggers once when the hero's own HP drops to/below this."), UsedImplicitly]
         public float TriggerHpPercent { get; set; } = 30f;
 
-        [DisplayName("Show Contour"), UsedImplicitly] public bool ShowContour { get; set; } = true;
-        [DisplayName("Contour Color (hex AARRGGBB)"), UsedImplicitly] public string ContourColor { get; set; } = "FFFFAA00";
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline while the effect is active - visual only, no gameplay effect."), UsedImplicitly] public bool ShowContour { get; set; } = true;
+        [DisplayName("Contour Color (hex AARRGGBB)"), Description("Outline color shown when Show Contour is on, as an 8-digit hex code: AA=alpha, RR=red, GG=green, BB=blue (e.g. FFFF0000 = solid red)."), UsedImplicitly] public string ContourColor { get; set; } = "FFFFAA00";
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -5372,7 +5372,7 @@ public class BLTAurasModule : MBSubModuleBase
         [DisplayName("Reanimate Chance (%)"), UsedImplicitly] public float ChancePercent { get; set; } = 15f;
         [DisplayName("Gold Per Kill (by raised unit)"), UsedImplicitly] public int GoldPerKill { get; set; } = 50;
         [DisplayName("Max Active Reanimated Units"), UsedImplicitly] public int MaxActive { get; set; } = 2;
-        [DisplayName("Show Message"), UsedImplicitly] public bool ShowMessage { get; set; } = true;
+        [DisplayName("Show Message"), Description("Whether to post a chat/feed message when this effect triggers."), UsedImplicitly] public bool ShowMessage { get; set; } = true;
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -5510,7 +5510,7 @@ public class BLTAurasModule : MBSubModuleBase
     public class StealthPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
     {
         [DisplayName("Stealth Duration (seconds)"), UsedImplicitly] public float StealthDuration { get; set; } = 4f;
-        [DisplayName("Cooldown (seconds)"), UsedImplicitly] public float CooldownSeconds { get; set; } = 20f;
+        [DisplayName("Cooldown (seconds)"), Description("Minimum time (in seconds) between activations of this effect."), UsedImplicitly] public float CooldownSeconds { get; set; } = 20f;
 
         void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
             => OnActivation(hero, handlers);
@@ -5637,9 +5637,9 @@ public class BLTAurasModule : MBSubModuleBase
     {
         public override string GetTargetType() => "LastStandPower";
         [DisplayName("Trigger HP (%)"), UsedImplicitly] public string TriggerHpPercent { get; set; } = "";
-        [DisplayName("Damage Bonus (%)"), UsedImplicitly] public string DamageBonusPercent { get; set; } = "";
-        [DisplayName("Damage Reduction (%)"), UsedImplicitly] public string DamageReductionPercent { get; set; } = "";
-        [DisplayName("Duration (seconds)"), UsedImplicitly] public string DurationSeconds { get; set; } = "";
+        [DisplayName("Damage Bonus (%)"), Description("Percentage bonus added to damage dealt while this effect is active."), UsedImplicitly] public string DamageBonusPercent { get; set; } = "";
+        [DisplayName("Damage Reduction (%)"), Description("Percentage reduction applied to incoming damage while this effect is active."), UsedImplicitly] public string DamageReductionPercent { get; set; } = "";
+        [DisplayName("Duration (seconds)"), Description("How long (in seconds) this effect lasts once triggered."), UsedImplicitly] public string DurationSeconds { get; set; } = "";
     }
     public class TauntSection : PowerProgressionSection
     {
@@ -5658,7 +5658,7 @@ public class BLTAurasModule : MBSubModuleBase
         public override string GetTargetType() => "DamageAuraPower";
         [DisplayName("Damage Per Tick"), UsedImplicitly] public string DamagePerTick { get; set; } = "";
         [DisplayName("Damage Range"), UsedImplicitly] public string DamageRange { get; set; } = "";
-        [DisplayName("Max Agents Per Tick"), UsedImplicitly] public string MaxAgentsPerTick { get; set; } = "";
+        [DisplayName("Max Agents Per Tick"), Description("Caps how many nearby agents this effect can hit per tick, closest first - keeps performance in check in large battles."), UsedImplicitly] public string MaxAgentsPerTick { get; set; } = "";
     }
     public class CurseAuraSection : PowerProgressionSection
     {
@@ -5674,7 +5674,7 @@ public class BLTAurasModule : MBSubModuleBase
     {
         public override string GetTargetType() => "BuffAuraPower";
         [DisplayName("Aura Range"), UsedImplicitly] public string AuraRange { get; set; } = "";
-        [DisplayName("Damage Bonus (%)"), UsedImplicitly] public string DamageBonusPercent { get; set; } = "";
+        [DisplayName("Damage Bonus (%)"), Description("Percentage bonus added to damage dealt while this effect is active."), UsedImplicitly] public string DamageBonusPercent { get; set; } = "";
         [DisplayName("Armor Bonus (%)"), UsedImplicitly] public string ArmorBonusPercent { get; set; } = "";
         [DisplayName("Move Speed Bonus (%)"), UsedImplicitly] public string MoveSpeedBonusPercent { get; set; } = "";
         [DisplayName("Attack Speed Bonus (%)"), UsedImplicitly] public string AttackSpeedBonusPercent { get; set; } = "";
@@ -5684,21 +5684,21 @@ public class BLTAurasModule : MBSubModuleBase
         public override string GetTargetType() => "TeleportPower";
         [DisplayName("Search Range"), UsedImplicitly] public string SearchRange { get; set; } = "";
         [DisplayName("Splash Damage"), UsedImplicitly] public string SplashDamage { get; set; } = "";
-        [DisplayName("Splash Radius"), UsedImplicitly] public string SplashRadius { get; set; } = "";
+        [DisplayName("Splash Radius"), Description("Radius in meters of the splash/area effect around the impact point."), UsedImplicitly] public string SplashRadius { get; set; } = "";
     }
     public class JumpAttackSection : PowerProgressionSection
     {
         public override string GetTargetType() => "JumpAttackPower";
-        [DisplayName("Cooldown (seconds)"), UsedImplicitly] public string CooldownSeconds { get; set; } = "";
+        [DisplayName("Cooldown (seconds)"), Description("Minimum time (in seconds) between activations of this effect."), UsedImplicitly] public string CooldownSeconds { get; set; } = "";
         [DisplayName("Detection Range"), UsedImplicitly] public string DetectionRange { get; set; } = "";
         [DisplayName("Base Damage"), UsedImplicitly] public string BaseDamage { get; set; } = "";
-        [DisplayName("Damage Bonus (%)"), UsedImplicitly] public string DamageBonusPercent { get; set; } = "";
+        [DisplayName("Damage Bonus (%)"), Description("Percentage bonus added to damage dealt while this effect is active."), UsedImplicitly] public string DamageBonusPercent { get; set; } = "";
         [DisplayName("Knockback Distance"), UsedImplicitly] public string KnockbackDistance { get; set; } = "";
     }
     public class KickSection : PowerProgressionSection
     {
         public override string GetTargetType() => "KickPower";
-        [DisplayName("Cooldown (seconds)"), UsedImplicitly] public string CooldownSeconds { get; set; } = "";
+        [DisplayName("Cooldown (seconds)"), Description("Minimum time (in seconds) between activations of this effect."), UsedImplicitly] public string CooldownSeconds { get; set; } = "";
         [DisplayName("Kick Range"), UsedImplicitly] public string KickRange { get; set; } = "";
     }
 
@@ -5762,30 +5762,30 @@ public class BLTAurasModule : MBSubModuleBase
     {
         public override string GetTargetType() => "ChainLightningPower";
         [DisplayName("Chain Damage"), UsedImplicitly] public string ChainDamage { get; set; } = "";
-        [DisplayName("Chain Radius"), UsedImplicitly] public string ChainRadius { get; set; } = "";
+        [DisplayName("Chain Radius"), Description("How far (in meters) the effect can jump/chain from one target to the next."), UsedImplicitly] public string ChainRadius { get; set; } = "";
         [DisplayName("Max Targets"), UsedImplicitly] public string MaxTargets { get; set; } = "";
     }
     public class FearAuraSection : PowerProgressionSection
     {
         public override string GetTargetType() => "FearAuraPower";
-        [DisplayName("Aura Radius"), UsedImplicitly] public string Radius { get; set; } = "";
+        [DisplayName("Aura Radius"), Description("How far from the hero (in meters) this aura reaches."), UsedImplicitly] public string Radius { get; set; } = "";
         [DisplayName("Fear Chance Per Tick (%)"), UsedImplicitly] public string FearChancePercent { get; set; } = "";
     }
     public class SlowAuraSection : PowerProgressionSection
     {
         public override string GetTargetType() => "SlowAuraPower";
-        [DisplayName("Aura Radius"), UsedImplicitly] public string Radius { get; set; } = "";
+        [DisplayName("Aura Radius"), Description("How far from the hero (in meters) this aura reaches."), UsedImplicitly] public string Radius { get; set; } = "";
     }
     public class WeaknessAuraSection : PowerProgressionSection
     {
         public override string GetTargetType() => "WeaknessAuraPower";
-        [DisplayName("Aura Radius"), UsedImplicitly] public string Radius { get; set; } = "";
-        [DisplayName("Damage Reduction (%)"), UsedImplicitly] public string DamageReductionPercent { get; set; } = "";
+        [DisplayName("Aura Radius"), Description("How far from the hero (in meters) this aura reaches."), UsedImplicitly] public string Radius { get; set; } = "";
+        [DisplayName("Damage Reduction (%)"), Description("Percentage reduction applied to incoming damage while this effect is active."), UsedImplicitly] public string DamageReductionPercent { get; set; } = "";
     }
     public class BattleCryAuraSection : PowerProgressionSection
     {
         public override string GetTargetType() => "BattleCryAuraPower";
-        [DisplayName("Aura Radius"), UsedImplicitly] public string Radius { get; set; } = "";
+        [DisplayName("Aura Radius"), Description("How far from the hero (in meters) this aura reaches."), UsedImplicitly] public string Radius { get; set; } = "";
         [DisplayName("Speed Boost Multiplier"), UsedImplicitly] public string SpeedBoostMultiplier { get; set; } = "";
     }
     public class BloodRageSection : PowerProgressionSection
@@ -5802,7 +5802,7 @@ public class BLTAurasModule : MBSubModuleBase
     public class IronSkinSection : PowerProgressionSection
     {
         public override string GetTargetType() => "IronSkinPower";
-        [DisplayName("Damage Reduction (%)"), UsedImplicitly] public string DamageReductionPercent { get; set; } = "";
+        [DisplayName("Damage Reduction (%)"), Description("Percentage reduction applied to incoming damage while this effect is active."), UsedImplicitly] public string DamageReductionPercent { get; set; } = "";
         [DisplayName("Active Duration (seconds)"), UsedImplicitly] public string ActiveDurationSeconds { get; set; } = "";
     }
     public class SecondWindSection : PowerProgressionSection
@@ -5823,25 +5823,25 @@ public class BLTAurasModule : MBSubModuleBase
     public class ShockwaveSection : PowerProgressionSection
     {
         public override string GetTargetType() => "ShockwavePower";
-        [DisplayName("Radius (meters)"), UsedImplicitly] public string Radius { get; set; } = "";
+        [DisplayName("Radius (meters)"), Description("Effect radius in meters."), UsedImplicitly] public string Radius { get; set; } = "";
     }
     public class WarBannerSection : PowerProgressionSection
     {
         public override string GetTargetType() => "WarBannerPower";
-        [DisplayName("Aura Radius (meters)"), UsedImplicitly] public string Radius { get; set; } = "";
+        [DisplayName("Aura Radius (meters)"), Description("How far from the hero (in meters) this aura reaches."), UsedImplicitly] public string Radius { get; set; } = "";
         [DisplayName("Speed Multiplier"), UsedImplicitly] public string SpeedMult { get; set; } = "";
     }
     public class MarkTargetSection : PowerProgressionSection
     {
         public override string GetTargetType() => "MarkTargetPower";
-        [DisplayName("Mark Radius (meters)"), UsedImplicitly] public string Radius { get; set; } = "";
+        [DisplayName("Mark Radius (meters)"), Description("How far from the hero (in meters) enemies get marked by this effect."), UsedImplicitly] public string Radius { get; set; } = "";
         [DisplayName("Bonus Damage Multiplier (%)"), UsedImplicitly] public string BonusPercent { get; set; } = "";
     }
     public class RallyingCrySection : PowerProgressionSection
     {
         public override string GetTargetType() => "RallyingCryPower";
         [DisplayName("Heal Amount"), UsedImplicitly] public string HealAmount { get; set; } = "";
-        [DisplayName("Radius (meters)"), UsedImplicitly] public string Radius { get; set; } = "";
+        [DisplayName("Radius (meters)"), Description("Effect radius in meters."), UsedImplicitly] public string Radius { get; set; } = "";
     }
     public class StealthSection : PowerProgressionSection
     {
