@@ -6462,6 +6462,9 @@ public class BLTAurasModule : MBSubModuleBase
         public string OwnerName { get; set; }     // owner viewer name (hero.FirstName.Raw())
         public string HeroStringId { get; set; }  // real Hero backing this wanderer - resolved live, never serialized as an object
         public string Power { get; set; }         // WandererPowerCatalog.Def.Id - rolled once at hire time, kept for the wanderer's lifetime
+        public int Kills { get; set; }            // lifetime kills by this wanderer (self-progression, independent of owner)
+        public int Battles { get; set; }          // lifetime battles this wanderer has fought in
+        public int Tier { get; set; } = 1;        // 1-8, recomputed from Kills/Battles after each battle; drives own equipment + power scaling
     }
 
     // Small hand-rolled power set for wanderers. Deliberately NOT the same 34-power system used by
@@ -6534,6 +6537,20 @@ public class BLTAurasModule : MBSubModuleBase
 
         public List<(WandererRecord Record, Hero Hero)> GetWanderers(string ownerName)
             => GetRecords(ownerName).Select(r => (r, ResolveHero(r))).Where(x => x.Item2 != null).ToList();
+
+        // Finds a wanderer's record by its backing Hero's StringId, regardless of which owner it
+        // belongs to - used by power-magnitude scaling, which only has the wanderer's own Agent/Hero
+        // to work with, not the owner key.
+        public WandererRecord FindRecordByHeroStringId(string heroStringId)
+        {
+            if (string.IsNullOrEmpty(heroStringId)) return null;
+            foreach (var list in wanderers.Values)
+            {
+                var match = list?.FirstOrDefault(r => r.HeroStringId == heroStringId);
+                if (match != null) return match;
+            }
+            return null;
+        }
 
         public WandererRecord Add(string ownerName, Hero hero)
         {
@@ -6830,7 +6847,7 @@ public class BLTAurasModule : MBSubModuleBase
                     ActionManager.SendReply(context, string.Join(" | ", entries.Select((e, i) =>
                     {
                         var pd = WandererPowerCatalog.Get(e.Record.Power);
-                        return $"{i + 1}:{e.Hero.Name}{(e.Hero.IsDead ? " (dead)" : "")}{(pd.HasValue ? $" [{pd.Value.Display}]" : "")}";
+                        return $"{i + 1}:{e.Hero.Name}{(e.Hero.IsDead ? " (dead)" : "")} T{e.Record.Tier}{(pd.HasValue ? $" [{pd.Value.Display}]" : "")}";
                     })));
                     return;
                 }
@@ -6886,9 +6903,10 @@ public class BLTAurasModule : MBSubModuleBase
                     string list = string.Join(" | ", parts);
                     var powerDef = WandererPowerCatalog.Get(entries[idx].Record.Power);
                     string powerStr = powerDef.HasValue ? $" | Power: {powerDef.Value.Display} ({powerDef.Value.Desc})" : "";
+                    string tierStr = $" | Tier {entries[idx].Record.Tier} ({entries[idx].Record.Kills} kills, {entries[idx].Record.Battles} battles)";
                     ActionManager.SendReply(context, string.IsNullOrEmpty(list)
-                        ? $"Wanderer {idx + 1} ({wandererHero.Name}) has no equipment.{powerStr}"
-                        : $"Wanderer {idx + 1} ({wandererHero.Name}): {list}{powerStr}");
+                        ? $"Wanderer {idx + 1} ({wandererHero.Name}) has no equipment.{powerStr}{tierStr}"
+                        : $"Wanderer {idx + 1} ({wandererHero.Name}): {list}{powerStr}{tierStr}");
                     return;
                 }
                 case "skills":
@@ -6941,6 +6959,21 @@ public class BLTAurasModule : MBSubModuleBase
         // ourselves via OnAgentRemoved instead).
         private readonly Dictionary<Agent, Hero> wandererAgentToOwner = new Dictionary<Agent, Hero>();
 
+        // Maps a spawned wanderer's own agent to the WANDERER's own Hero (as opposed to
+        // wandererAgentToOwner, which maps to the OWNER's Hero) - needed for self-progression
+        // (crediting kills to the correct wanderer's own Kills/Battles/Tier) and for the
+        // battle/permanent death-chance system, both keyed off the wanderer itself.
+        private readonly Dictionary<Agent, Hero> wandererAgentToHero = new Dictionary<Agent, Hero>();
+
+        // Wanderers that actually spawned into THIS mission, tracked so we can credit a Battle
+        // (and roll Tier) for them at mission end, keyed by (ownerKey, wanderer StringId).
+        private readonly HashSet<(string ownerKey, string wandererStringId)> spawnedThisMission = new HashSet<(string, string)>();
+
+        // Kills THIS mission per wanderer, keyed by the wanderer Hero's StringId (survives even if
+        // the wanderer's agent dies, unlike keying off Agent). Reset per mission implicitly since
+        // this whole behavior is recreated each mission.
+        private readonly Dictionary<string, int> wandererKillCounts = new Dictionary<string, int>();
+
         // Power bookkeeping - keyed off the wanderer's OWN spawned agent (not the owner's).
         private readonly Dictionary<Agent, string> wandererAgentPower = new Dictionary<Agent, string>();
         private readonly HashSet<Agent> secondWindUsed = new HashSet<Agent>();
@@ -6958,6 +6991,18 @@ public class BLTAurasModule : MBSubModuleBase
         }
         private readonly List<PendingSpawn> pending = new List<PendingSpawn>();
 
+        // Permanent Death Chance revival queue: spawning a fresh Hero must never happen mid-dispatch
+        // (see the Necromancy crash fix - SpawnTroop-adjacent engine calls inside OnAgentRemoved
+        // corrupt the engine's own agent-list enumeration), so a "wanderer comes back" decision made
+        // in OnAgentRemoved is only QUEUED here; the actual HeroCreator.CreateSpecialHero call happens
+        // on the next OnMissionTick.
+        private class PendingRevive
+        {
+            public WandererRecord Record;
+            public Hero DeadHero;
+        }
+        private readonly List<PendingRevive> pendingRevives = new List<PendingRevive>();
+
         public override void OnAgentRemoved(Agent affectedAgent, Agent affectorAgent, AgentState agentState, KillingBlow blow)
         {
             try
@@ -6966,6 +7011,42 @@ public class BLTAurasModule : MBSubModuleBase
                 {
                     Log.Info($"[Wanderer] OnAgentRemoved: affected={affectedAgent.Name} state={agentState} affector={affectorAgent?.Name ?? "null"} isTrackedWanderer={(affectorAgent != null && wandererAgentToOwner.ContainsKey(affectorAgent))}");
                 }
+
+                // Credit a kill to the wanderer's OWN kill counter (self-progression), independent
+                // of the owner-gold-reward logic further down.
+                if (agentState == AgentState.Killed && affectorAgent != null
+                    && wandererAgentToHero.TryGetValue(affectorAgent, out var killerWandererHero) && killerWandererHero != null)
+                {
+                    wandererKillCounts.TryGetValue(killerWandererHero.StringId, out int killCur);
+                    wandererKillCounts[killerWandererHero.StringId] = killCur + 1;
+                }
+
+                // Permanent Death Chance: only relevant when the REMOVED agent is itself a tracked
+                // wanderer that actually died (Battle Death Chance in OnAgentHit already gave it a
+                // chance to survive the hit entirely - reaching here means that roll failed).
+                if (affectedAgent != null && agentState == AgentState.Killed
+                    && wandererAgentToHero.TryGetValue(affectedAgent, out var deadWandererHero) && deadWandererHero != null)
+                {
+                    var record = BLTWandererBehavior.Current?.FindRecordByHeroStringId(deadWandererHero.StringId);
+                    if (record != null)
+                    {
+                        var deathCfg = WandererGlobalConfig.Get();
+                        float permanentChance = deathCfg?.PermanentDeathChancePercent ?? 100f;
+                        if (MBRandom.RandomFloat * 100f < permanentChance)
+                        {
+                            // Permanent: the Hero itself still dies normally through the campaign's
+                            // own death resolution - we only reset OUR tracked progress.
+                            record.Kills = 0;
+                            record.Battles = 0;
+                            record.Tier = 1;
+                        }
+                        else
+                        {
+                            pendingRevives.Add(new PendingRevive { Record = record, DeadHero = deadWandererHero });
+                        }
+                    }
+                }
+
                 if (affectorAgent == null || agentState != AgentState.Killed) return;
                 if (!wandererAgentToOwner.TryGetValue(affectorAgent, out var ownerHero) || ownerHero == null) return;
                 BLTWandererKillTracker.Add(ownerHero);
@@ -6980,12 +7061,13 @@ public class BLTAurasModule : MBSubModuleBase
                         {
                             case "Vampirism":
                                 if (affectorAgent.HealthLimit > 0f)
-                                    affectorAgent.Health = Math.Min(affectorAgent.HealthLimit, affectorAgent.Health + affectorAgent.HealthLimit * 0.20f);
+                                    affectorAgent.Health = Math.Min(affectorAgent.HealthLimit, affectorAgent.Health + affectorAgent.HealthLimit * 0.20f * GetWandererPowerScale(affectorAgent));
                                 break;
                             case "Bloodrage":
                             {
+                                float bloodrageBonus = 30f * GetWandererPowerScale(affectorAgent);
                                 var buffCfg = new AgentModifierConfig();
-                                buffCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.SwingSpeedMultiplier, ModifierPercent = 130f });
+                                buffCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.SwingSpeedMultiplier, ModifierPercent = 100f + bloodrageBonus });
                                 BLTTimedBuffBehavior.AddTimedBuff(affectorAgent, buffCfg, 8f);
                                 break;
                             }
@@ -7007,6 +7089,22 @@ public class BLTAurasModule : MBSubModuleBase
             try
             {
                 if (affectedAgent == null || !affectedAgent.IsActive()) return;
+
+                // Battle Death Chance: applies to ANY tracked wanderer (independent of its rolled
+                // power). When a hit would drop its HP to/below 0, roll BattleDeathChancePercent.
+                // On failure (the common case at the low default), clamp HP to a small positive
+                // value instead of letting the hit be lethal - same "survive at low HP" pattern
+                // used by Second Wind just below, but unconditional on power.
+                if (wandererAgentToHero.ContainsKey(affectedAgent) && affectedAgent.Health <= 0f)
+                {
+                    var deathCfg = WandererGlobalConfig.Get();
+                    float battleDeathChance = deathCfg?.BattleDeathChancePercent ?? 3f;
+                    if (MBRandom.RandomFloat * 100f >= battleDeathChance)
+                    {
+                        affectedAgent.Health = Math.Max(1f, affectedAgent.HealthLimit * 0.01f);
+                    }
+                }
+
                 if (!wandererAgentPower.TryGetValue(affectedAgent, out var power) || power != "SecondWind") return;
                 if (secondWindUsed.Contains(affectedAgent)) return;
                 if (affectedAgent.HealthLimit <= 0f) return;
@@ -7014,7 +7112,8 @@ public class BLTAurasModule : MBSubModuleBase
                 if (hpPct > 25f) return;
 
                 secondWindUsed.Add(affectedAgent);
-                affectedAgent.Health = Math.Min(affectedAgent.HealthLimit, affectedAgent.HealthLimit * 0.6f);
+                float healFraction = Math.Min(1f, 0.6f * GetWandererPowerScale(affectedAgent));
+                affectedAgent.Health = Math.Min(affectedAgent.HealthLimit, affectedAgent.HealthLimit * healFraction);
                 var buffCfg = new AgentModifierConfig();
                 buffCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.MaxSpeedMultiplier, ModifierPercent = 130f });
                 buffCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.SwingSpeedMultiplier, ModifierPercent = 120f });
@@ -7045,11 +7144,38 @@ public class BLTAurasModule : MBSubModuleBase
                 foreach (var (record, wandererHero) in behavior.GetWanderers(ownerKey))
                 {
                     if (wandererHero == null || wandererHero.IsDead) continue;
-                    SyncWandererEquipmentToOwner(hero, wandererHero);
+                    UpgradeWandererEquipment(wandererHero, record?.Tier ?? 1);
+                    spawnedThisMission.Add((ownerKey, wandererHero.StringId));
                     pending.Add(new PendingSpawn { OwnerAgent = agent, Owner = hero, Wanderer = wandererHero, Record = record });
                 }
             }
             catch (Exception ex) { Log.Exception("WandererSpawnMissionBehavior.OnAgentCreated", ex); }
+        }
+
+        // Applies this mission's accumulated kills/battle-count to every wanderer that spawned into
+        // it, and recomputes their Tier. Dead wanderers are skipped here - their progress reset (or
+        // preservation via revival) is handled separately by the death-chance logic in OnAgentRemoved.
+        protected override void OnEndMission()
+        {
+            try
+            {
+                var cfg = WandererGlobalConfig.Get();
+                var behavior = BLTWandererBehavior.Current;
+                if (cfg == null || behavior == null) return;
+
+                foreach (var (ownerKey, wandererStringId) in spawnedThisMission)
+                {
+                    var entries = behavior.GetWanderers(ownerKey);
+                    var match = entries.FirstOrDefault(e => e.Hero?.StringId == wandererStringId);
+                    if (match.Record == null || match.Hero == null || match.Hero.IsDead) continue;
+
+                    int wandererKillsThisMission = wandererKillCounts.TryGetValue(match.Hero.StringId, out int k) ? k : 0;
+                    match.Record.Kills += wandererKillsThisMission;
+                    match.Record.Battles += 1;
+                    match.Record.Tier = WandererTierCalculator.ComputeTier(match.Record.Kills, match.Record.Battles, cfg);
+                }
+            }
+            catch (Exception ex) { Log.Exception("WandererSpawnMissionBehavior.OnEndMission", ex); }
         }
 
         public override void OnMissionTick(float dt)
@@ -7082,6 +7208,43 @@ public class BLTAurasModule : MBSubModuleBase
                 catch (Exception ex) { Log.Exception("WandererSpawnMissionBehavior.OnMissionTick", ex); }
             }
 
+            if (pendingRevives.Count > 0)
+            {
+                try
+                {
+                    foreach (var r in pendingRevives)
+                    {
+                        try
+                        {
+                            var template = CampaignHelpers.GetWandererTemplates(r.DeadHero.Culture)?.SelectRandom()
+                                        ?? CampaignHelpers.AllWandererTemplates.SelectRandom();
+                            if (template == null) continue;
+
+                            var revived = HeroCreator.CreateSpecialHero(template);
+                            revived.ChangeState(Hero.CharacterStates.Active);
+                            var targetSettlement = TaleWorlds.CampaignSystem.Settlements.Settlement.All.Where(s => s.IsTown).SelectRandom();
+                            if (targetSettlement != null) EnterSettlementAction.ApplyForCharacterOnly(revived, targetSettlement);
+                            if (revived.GetSkillValue(CampaignHelpers.AllSkillObjects.First()) == 0)
+                                revived.HeroDeveloper.SetInitialSkillLevel(CampaignHelpers.AllSkillObjects.First(), 1);
+
+                            // Copy equipment directly (Kills/Battles/Tier already live on the Record,
+                            // which we keep unchanged - only HeroStringId needs to point at the new Hero).
+                            for (var idx = EquipmentIndex.Weapon0; idx < EquipmentIndex.NumEquipmentSetSlots; idx++)
+                            {
+                                revived.BattleEquipment[idx] = r.DeadHero.BattleEquipment[idx];
+                                revived.CivilianEquipment[idx] = r.DeadHero.CivilianEquipment[idx];
+                            }
+
+                            r.Record.HeroStringId = revived.StringId;
+                            Log.ShowInformation($"A wanderer cheats death and returns, remembering everything!", revived.CharacterObject);
+                        }
+                        catch (Exception ex) { Log.Exception("WandererSpawnMissionBehavior.ProcessPendingRevive", ex); }
+                    }
+                    pendingRevives.Clear();
+                }
+                catch (Exception ex) { Log.Exception("WandererSpawnMissionBehavior.OnMissionTick.Revives", ex); }
+            }
+
             if (wandererAgentPower.Count > 0)
             {
                 try
@@ -7096,7 +7259,7 @@ public class BLTAurasModule : MBSubModuleBase
                         {
                             case "Juggernaut":
                                 if (agent.HealthLimit > 0f)
-                                    agent.Health = Math.Min(agent.HealthLimit, agent.Health + 0.5f * dt);
+                                    agent.Health = Math.Min(agent.HealthLimit, agent.Health + 0.5f * GetWandererPowerScale(agent) * dt);
                                 break;
                             case "Berserk":
                             {
@@ -7104,19 +7267,20 @@ public class BLTAurasModule : MBSubModuleBase
                                 float hpPct = agent.Health / agent.HealthLimit * 100f;
                                 bool shouldBeActive = hpPct <= 50f;
                                 bool isActive = berserkActive.Contains(agent);
+                                float berserkBonus = 40f * GetWandererPowerScale(agent);
                                 if (shouldBeActive && !isActive)
                                 {
                                     var buffCfg = new AgentModifierConfig();
-                                    buffCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.SwingSpeedMultiplier, ModifierPercent = 140f });
-                                    buffCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.MaxSpeedMultiplier, ModifierPercent = 140f });
+                                    buffCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.SwingSpeedMultiplier, ModifierPercent = 100f + berserkBonus });
+                                    buffCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.MaxSpeedMultiplier, ModifierPercent = 100f + berserkBonus });
                                     BLTAgentModifierBehavior.Current?.Add(agent, buffCfg);
                                     berserkActive.Add(agent);
                                 }
                                 else if (!shouldBeActive && isActive)
                                 {
                                     var negCfg = new AgentModifierConfig();
-                                    negCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.SwingSpeedMultiplier, ModifierPercent = 10000f / 140f });
-                                    negCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.MaxSpeedMultiplier, ModifierPercent = 10000f / 140f });
+                                    negCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.SwingSpeedMultiplier, ModifierPercent = 10000f / (100f + berserkBonus) });
+                                    negCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.MaxSpeedMultiplier, ModifierPercent = 10000f / (100f + berserkBonus) });
                                     BLTAgentModifierBehavior.Current?.Add(agent, negCfg);
                                     berserkActive.Remove(agent);
                                 }
@@ -7132,9 +7296,10 @@ public class BLTAurasModule : MBSubModuleBase
                                 if (now >= next)
                                 {
                                     battleCryNextPulse[agent] = now + 25f;
+                                    float battleCryBonus = 25f * GetWandererPowerScale(agent);
                                     var buffCfg = new AgentModifierConfig();
-                                    buffCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.SwingSpeedMultiplier, ModifierPercent = 125f });
-                                    buffCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.MaxSpeedMultiplier, ModifierPercent = 125f });
+                                    buffCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.SwingSpeedMultiplier, ModifierPercent = 100f + battleCryBonus });
+                                    buffCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.MaxSpeedMultiplier, ModifierPercent = 100f + battleCryBonus });
                                     BLTTimedBuffBehavior.AddTimedBuff(agent, buffCfg, 6f);
                                 }
                                 break;
@@ -7146,31 +7311,41 @@ public class BLTAurasModule : MBSubModuleBase
             }
         }
 
+        // Resolves the current Tier-based magnitude scale for a wanderer's own spawned agent.
+        // Returns 1.0 (no scaling) if the agent/record can't be resolved, so this never throws
+        // and never blocks a power from firing at its base strength.
+        private float GetWandererPowerScale(Agent wandererAgent)
+        {
+            try
+            {
+                if (wandererAgent == null) return 1f;
+                if (!wandererAgentToHero.TryGetValue(wandererAgent, out var wandererHero) || wandererHero == null) return 1f;
+                var record = BLTWandererBehavior.Current?.FindRecordByHeroStringId(wandererHero.StringId);
+                return record != null ? WandererPowerScaling.MagnitudeScale(record.Tier) : 1f;
+            }
+            catch { return 1f; }
+        }
+
         // A wanderer is a REAL Hero, so its own CharacterObject already reflects its real
         // equipment/skills/appearance - no reflection-built mirror character needed at all.
-        // Keeps the wanderer's gear tier in step with the owner's, WITHOUT copying the owner's
-        // exact items: for each slot the wanderer already has something equipped in, if the
-        // owner's item in that same slot is a higher Tier, look up another item of the SAME
-        // ItemType at the owner's Tier and equip that instead (e.g. a plain OneHandedSword
-        // becomes a better OneHandedSword, never someone else's exact weapon). Runs once per
-        // mission, right before the wanderer is queued for spawn.
-        private static void SyncWandererEquipmentToOwner(Hero owner, Hero wanderer)
+        // Upgrades the wanderer's own equipment to match its own Tier (1-8, from self-progression),
+        // independent of the owner's gear. For each slot the wanderer already has something equipped
+        // in, looks up another item of the SAME ItemType at the wanderer's OWN Tier and equips that
+        // instead (never downgrades - if the current item is already at or above the target tier,
+        // that slot is left alone). Runs once at hire/spawn and again whenever Tier increases.
+        private static void UpgradeWandererEquipment(Hero wanderer, int tier)
         {
             try
             {
                 for (var idx = EquipmentIndex.Weapon0; idx < EquipmentIndex.NumEquipmentSetSlots; idx++)
                 {
-                    var wandererItem = wanderer.BattleEquipment[idx];
-                    if (wandererItem.IsEmpty || wandererItem.Item == null) continue;
-
-                    var ownerItem = owner.BattleEquipment[idx];
-                    if (ownerItem.IsEmpty || ownerItem.Item == null) continue;
-
-                    if (ownerItem.Item.Tier <= wandererItem.Item.Tier) continue; // already caught up
+                    var current = wanderer.BattleEquipment[idx];
+                    if (current.IsEmpty || current.Item == null) continue;
+                    if ((int)current.Item.Tier >= tier) continue; // already at or above target (ItemTiers is an enum, compare as int)
 
                     var upgraded = TaleWorlds.ObjectSystem.MBObjectManager.Instance
                         .GetObjectTypeList<ItemObject>()
-                        .Where(i => i.ItemType == wandererItem.Item.ItemType && i.Tier == ownerItem.Item.Tier)
+                        .Where(i => i.ItemType == current.Item.ItemType && (int)i.Tier == tier)
                         .ToList()
                         .SelectRandom();
                     if (upgraded == null) continue;
@@ -7180,7 +7355,7 @@ public class BLTAurasModule : MBSubModuleBase
                     wanderer.CivilianEquipment[idx] = element;
                 }
             }
-            catch (Exception ex) { Log.Exception("SyncWandererEquipmentToOwner", ex); }
+            catch (Exception ex) { Log.Exception("UpgradeWandererEquipment", ex); }
         }
 
         private void SpawnWanderer(Agent ownerAgent, Hero owner, Hero wanderer, WandererRecord record)
@@ -7229,6 +7404,7 @@ public class BLTAurasModule : MBSubModuleBase
                 );
                 if (agent == null) { return; }
                 wandererAgentToOwner[agent] = owner;
+                wandererAgentToHero[agent] = wanderer;
                 Log.Info($"[Wanderer] Spawned {wanderer.Name} for owner {owner.Name}, tracking agent {agent.Name} for kill-gold.");
 
                 if (record != null)
@@ -7238,20 +7414,23 @@ public class BLTAurasModule : MBSubModuleBase
                     wandererAgentPower[agent] = record.Power;
                     try
                     {
+                        float onSpawnScale = WandererPowerScaling.MagnitudeScale(record.Tier);
                         switch (record.Power)
                         {
                             case "IronSkin":
                             {
+                                float ironSkinBonus = 25f * onSpawnScale;
                                 var cfg = new AgentModifierConfig();
-                                cfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.ArmorHead, ModifierPercent = 125f });
+                                cfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.ArmorHead, ModifierPercent = 100f + ironSkinBonus });
                                 BLTAgentModifierBehavior.Current?.Add(agent, cfg);
                                 break;
                             }
                             case "SwiftHunter":
                             {
+                                float swiftBonus = 20f * onSpawnScale;
                                 var cfg = new AgentModifierConfig();
-                                cfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.MaxSpeedMultiplier, ModifierPercent = 120f });
-                                cfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.CombatMaxSpeedMultiplier, ModifierPercent = 120f });
+                                cfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.MaxSpeedMultiplier, ModifierPercent = 100f + swiftBonus });
+                                cfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.CombatMaxSpeedMultiplier, ModifierPercent = 100f + swiftBonus });
                                 BLTAgentModifierBehavior.Current?.Add(agent, cfg);
                                 break;
                             }
@@ -7514,6 +7693,43 @@ public class BLTAurasModule : MBSubModuleBase
         }
     }
 
+    // Computes a wanderer's Tier (1-8) from its lifetime Kills/Battles against the configured
+    // per-tier thresholds. A tier is reached when EITHER the kill OR the battle threshold for it
+    // is met (same kills-OR-battles pattern as PowerProgression for hero powers).
+    public static class WandererTierCalculator
+    {
+        public static int ComputeTier(int kills, int battles, WandererGlobalConfig cfg)
+        {
+            var killThresholds = ParseCsv(cfg?.TierKillThresholds);
+            var battleThresholds = ParseCsv(cfg?.TierBattleThresholds);
+            int tier = 1;
+            for (int i = 0; i < killThresholds.Count && i < battleThresholds.Count; i++)
+            {
+                if (kills >= killThresholds[i] || battles >= battleThresholds[i])
+                    tier = i + 2; // thresholds[0] is the requirement for tier 2, etc.
+                else
+                    break;
+            }
+            return Math.Min(8, Math.Max(1, tier));
+        }
+
+        private static List<int> ParseCsv(string csv)
+        {
+            var result = new List<int>();
+            if (string.IsNullOrWhiteSpace(csv)) return result;
+            foreach (var part in csv.Split(','))
+                if (int.TryParse(part.Trim(), out int v)) result.Add(v);
+            return result;
+        }
+    }
+
+    // +15% magnitude per tier above 1 (Tier 1 = 1.0x, Tier 8 = 2.05x), used to scale the 8
+    // hand-rolled wanderer powers by the wanderer's own progression Tier.
+    public static class WandererPowerScaling
+    {
+        public static float MagnitudeScale(int tier) => 1f + Math.Max(0, tier - 1) * 0.15f;
+    }
+
     public class WandererGlobalConfig
     {
         private const string ID = "MBGA - Wanderers";
@@ -7531,6 +7747,18 @@ public class BLTAurasModule : MBSubModuleBase
 
         [DisplayName("Gold Per Kill"), Description("Gold awarded to the owner (viewer) each time their wanderer kills an enemy. Set to 0 to disable."), UsedImplicitly]
         public int GoldPerKill { get; set; } = 300;
+
+        [DisplayName("Tier Kill Thresholds"), Description("Comma-separated kills required to reach tier 2,3,4,5,6,7,8 (7 numbers). A wanderer reaches a tier when its kills OR battles meet that tier's threshold."), UsedImplicitly]
+        public string TierKillThresholds { get; set; } = "5,12,22,35,50,70,95";
+
+        [DisplayName("Tier Battle Thresholds"), Description("Comma-separated battles required to reach tier 2,3,4,5,6,7,8 (7 numbers)."), UsedImplicitly]
+        public string TierBattleThresholds { get; set; } = "3,7,12,18,25,33,42";
+
+        [DisplayName("Battle Death Chance (%)"), Description("Chance a killing blow actually kills the wanderer in this battle. Low by default - most 'fatal' hits are survived."), UsedImplicitly]
+        public float BattleDeathChancePercent { get; set; } = 3f;
+
+        [DisplayName("Permanent Death Chance (%)"), Description("Only rolled if Battle Death Chance already resulted in death. 100% = any real death is permanent (today's behavior). Lower this to let a wanderer sometimes come back with its Kills/Battles/Tier intact."), UsedImplicitly]
+        public float PermanentDeathChancePercent { get; set; } = 100f;
     }
 
     public class AdrenalineGlobalConfig
