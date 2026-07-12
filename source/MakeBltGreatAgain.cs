@@ -2454,6 +2454,7 @@ public class BLTAurasModule : MBSubModuleBase
             try { MBGATournamentLoadoutConfig.Register(); } catch (Exception ex) { Log.Exception("[TournamentLoadout] Register failed", ex); }
             try { MBGARetinueRefundConfig.Register(); } catch (Exception ex) { Log.Exception("[RetinueRefund] Register failed", ex); }
             try { MBGAPrestigeConfig.Register(); } catch (Exception ex) { Log.Exception("[Prestige] Register failed", ex); }
+            try { MBGADiscardRefundConfig.Register(); } catch (Exception ex) { Log.Exception("[DiscardRefund] Register failed", ex); }
         }
 
         protected override void OnSubModuleLoad()
@@ -8261,6 +8262,86 @@ public class BLTAurasModule : MBSubModuleBase
                 cultureFilterSpecified = true;                       // ... i nigdy nie odpuszczaj (brak obcej kultury)
             }
             catch (Exception e) { Log.Exception("[EquipCulture] Prefix", e); }
+        }
+    }
+
+    // !discard w oryginalnym DLL nie ma ani ostrzezenia przed skasowaniem zalozonego przedmiotu, ani
+    // refundu - fork dodaje obie rzeczy, ale refund liczy z BLTCustomItemsCampaignBehavior.PurchaseCost,
+    // pola ktorego NIE MA w oryginalnym DLL (rzucilby MissingFieldException gdyby wywolane). Wlasna
+    // reimplementacja: ten sam equipped-item guard (+ "force" do obejscia), ale refund to plaska,
+    // konfigurowalna kwota zamiast prawdziwego 1/8 kosztu (ktorego nie da sie odczytac z zewnatrz).
+    public class MBGADiscardRefundConfig
+    {
+        private const string ID = "MBGA - Discard Refund";
+        internal static void Register() => ActionManager.RegisterGlobalConfigType(ID, typeof(MBGADiscardRefundConfig));
+        internal static MBGADiscardRefundConfig Get() => ActionManager.GetGlobalConfig<MBGADiscardRefundConfig>(ID);
+
+        [DisplayName("Enabled"), Description("Guard against accidentally discarding an equipped custom item (require \"!discard <index> force\" to confirm) and refund a flat amount of gold on discard. Standalone re-implementation for an UNMODIFIED BLTAdoptAHero.dll - off by default, leave disabled if running the MesmerTurn fork, which already has this (and a more accurate, cost-based refund)."), UsedImplicitly]
+        public bool Enabled { get; set; } = false;
+
+        [DisplayName("Flat Refund"), Description("Flat gold refunded per discarded custom item. The fork refunds 1/8th of the tracked purchase cost, but that cost isn't readable from outside - this is a flat approximation instead."), UsedImplicitly]
+        public int FlatRefund { get; set; } = 1000;
+    }
+
+    [HarmonyPatch]
+    internal static class DiscardItemGuardPatch
+    {
+        internal static System.Reflection.MethodBase TargetMethod()
+            => typeof(DiscardItem).GetMethod("ExecuteInternal",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+        [HarmonyPrefix]
+        private static bool Prefix(Hero adoptedHero, ReplyContext context, object config,
+            Action<string> onSuccess, Action<string> onFailure)
+        {
+            try
+            {
+                var cfg = MBGADiscardRefundConfig.Get();
+                if (cfg == null || !cfg.Enabled) return true; // standard BLT behavior
+
+                if (string.IsNullOrWhiteSpace(context.Args))
+                {
+                    onFailure(context.ArgsErrorMessage("(custom item index)"));
+                    return false;
+                }
+
+                var argParts = context.Args.Trim().Split(' ');
+                bool force = argParts.Length > 1 && argParts[1].Equals("force", StringComparison.OrdinalIgnoreCase);
+
+                (var element, string error) = BLTAdoptAHeroCampaignBehavior.Current.FindCustomItemByIndex(adoptedHero, argParts[0]);
+                if (element.IsEqualTo(EquipmentElement.Invalid))
+                {
+                    onFailure(error ?? "(unknown error)");
+                    return false;
+                }
+
+                bool isEquipped = adoptedHero.BattleEquipment.YieldFilledEquipmentSlots().Any(e => e.element.IsEqualTo(element))
+                                || adoptedHero.CivilianEquipment.YieldFilledEquipmentSlots().Any(e => e.element.IsEqualTo(element));
+                if (isEquipped && !force)
+                {
+                    onFailure($"'{RewardHelpers.GetItemNameAndModifiers(element)}' is currently equipped - equip something else in that slot first, or use \"!discard {argParts[0]} force\" to discard it anyway.");
+                    return false;
+                }
+
+                BLTAdoptAHeroCampaignBehavior.Current.DiscardCustomItem(adoptedHero, element);
+
+                if (cfg.FlatRefund > 0)
+                {
+                    BLTAdoptAHeroCampaignBehavior.Current.ChangeHeroGold(adoptedHero, cfg.FlatRefund);
+                    onSuccess($"'{RewardHelpers.GetItemNameAndModifiers(element)}' was discarded (+{cfg.FlatRefund} gold)");
+                }
+                else
+                {
+                    onSuccess($"'{RewardHelpers.GetItemNameAndModifiers(element)}' was discarded");
+                }
+
+                return false; // skip original
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("DiscardItemGuardPatch.Prefix failed", ex);
+                return true; // fall back to original on error
+            }
         }
     }
 
