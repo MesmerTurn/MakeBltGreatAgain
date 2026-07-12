@@ -35,9 +35,26 @@ using TaleWorlds.Engine;
 using TaleWorlds.Library;
 using TaleWorlds.MountAndBlade;
 using Xceed.Wpf.Toolkit.PropertyGrid.Attributes;
+using static MakeBltGreatAgain.ContourHelpers;
 
 namespace MakeBltGreatAgain
 {
+    // A torn-down agent's C# wrapper can still be non-null while its underlying native object is
+    // already destroyed (very common during tournament match transitions, which teardown agents
+    // fast) - calling SetContourColor on that dead native object throws AccessViolationException,
+    // a NATIVE crash that try/catch cannot actually catch (confirmed via a real crash report from
+    // AdrenalineMissionBehavior.Deactivate). agent.IsActive() is the required guard before ANY
+    // AgentVisuals access, not just a null-conditional. Centralized here since the unsafe pattern
+    // was repeated ~100 times across every aura/strike power in this file.
+    public static class ContourHelpers
+    {
+        public static void SafeSetContourColor(Agent agent, uint? color, bool alwaysVisible)
+        {
+            if (agent == null || !agent.IsActive()) return;
+            try { SafeSetContourColor(agent, color, alwaysVisible); } catch { }
+        }
+    }
+
     // Wspólny, assembly-wide strażnik: MBGA scala 5 modułów (MBSubModuleBase) w jednym DLL,
     // każdy z własną instancją Harmony i własnym wywołaniem PatchAll(). Bezparametrowe PatchAll()
     // skanuje CAŁĄ WYWOŁUJĄCĄ ASEMBLĘ (tu zawsze MakeBltGreatAgain.dll, niezależnie która klasa
@@ -2229,8 +2246,8 @@ public class BLTAurasModule : MBSubModuleBase
                 }
                 poisonedAgents[victim] = poisonDurationTicks;
                 if (ShowPoisonContour)
-                    try { victim.AgentVisuals?.SetContourColor(Convert.ToUInt32(PoisonContourColor, 16), true); }
-                    catch { victim.AgentVisuals?.SetContourColor(0xFF00CC00u, true); }
+                    try { SafeSetContourColor(victim, Convert.ToUInt32(PoisonContourColor, 16), true); }
+                    catch { SafeSetContourColor(victim, 0xFF00CC00u, true); }
             };
 
             handlers.OnSlowTick += dt =>
@@ -2257,7 +2274,7 @@ public class BLTAurasModule : MBSubModuleBase
                     poisonedAgents[key]--;
                     if (poisonedAgents[key] <= 0)
                     {
-                        if (ShowPoisonContour) try { key.AgentVisuals?.SetContourColor(null, false); } catch { }
+                        if (ShowPoisonContour) try { SafeSetContourColor(key, null, false); } catch { }
                         poisonedAgents.Remove(key);
                     }
                 }
@@ -2266,7 +2283,7 @@ public class BLTAurasModule : MBSubModuleBase
             void Cleanup()
             {
                 if (ShowPoisonContour)
-                    foreach (var a in poisonedAgents.Keys) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                    foreach (var a in poisonedAgents.Keys) try { SafeSetContourColor(a, null, false); } catch { }
                 poisonedAgents.Clear();
             }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
@@ -2317,7 +2334,7 @@ public class BLTAurasModule : MBSubModuleBase
                 if (current != null && current != trackedAgent)
                 {
                     if (berserkActive && ShowContour)
-                        try { trackedAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                        try { SafeSetContourColor(trackedAgent, null, false); } catch { }
                     trackedAgent = current;
                     berserkActive = false;
                 }
@@ -2327,7 +2344,7 @@ public class BLTAurasModule : MBSubModuleBase
                 if (hpRatio >= threshold)
                 {
                     if (berserkActive && ShowContour)
-                        try { attacker.AgentVisuals?.SetContourColor(null, false); } catch { }
+                        try { SafeSetContourColor(attacker, null, false); } catch { }
                     berserkActive = false;
                     return;
                 }
@@ -2340,9 +2357,9 @@ public class BLTAurasModule : MBSubModuleBase
                         try
                         {
                             uint color = Convert.ToUInt32(ContourColor, 16);
-                            attacker.AgentVisuals?.SetContourColor(color, true);
+                            SafeSetContourColor(attacker, color, true);
                         }
-                        catch { attacker.AgentVisuals?.SetContourColor(0xFF8B0000u, true); }
+                        catch { SafeSetContourColor(attacker, 0xFF8B0000u, true); }
                 }
                 float berserkRatio = 1f - (hpRatio / threshold);
                 float multiplier = 1f + (maxDamageBonusPercent / 100f) * berserkRatio;
@@ -2352,7 +2369,7 @@ public class BLTAurasModule : MBSubModuleBase
             void Cleanup()
             {
                 if (berserkActive && ShowContour)
-                    try { trackedAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                    try { SafeSetContourColor(trackedAgent, null, false); } catch { }
                 berserkActive = false;
             }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
@@ -2414,7 +2431,7 @@ public class BLTAurasModule : MBSubModuleBase
                 if (cur != null && cur != trackedAgent)
                 {
                     if (triggered && ShowContour)
-                        try { trackedAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                        try { SafeSetContourColor(trackedAgent, null, false); } catch { }
                     trackedAgent = cur;
                     triggered = false;
                     expiryTime = 0f;
@@ -2435,9 +2452,9 @@ public class BLTAurasModule : MBSubModuleBase
                     try
                     {
                         uint color = Convert.ToUInt32(ContourColor, 16);
-                        victim.AgentVisuals?.SetContourColor(color, true);
+                        SafeSetContourColor(victim, color, true);
                     }
-                    catch { victim.AgentVisuals?.SetContourColor(0xFFFFFFFFu, true); }
+                    catch { SafeSetContourColor(victim, 0xFFFFFFFFu, true); }
             };
 
             handlers.OnDoDamage += (attacker, victim, blowParams) =>
@@ -2446,7 +2463,7 @@ public class BLTAurasModule : MBSubModuleBase
                 float now = Mission.Current?.CurrentTime ?? 0f;
                 if (now > expiryTime)
                 {
-                    if (ShowContour) try { attacker.AgentVisuals?.SetContourColor(null, false); } catch { }
+                    if (ShowContour) try { SafeSetContourColor(attacker, null, false); } catch { }
                     return;
                 }
                 blowParams.blow.InflictedDamage = (int)(blowParams.blow.InflictedDamage * (1f + damageBonusPercent / 100f));
@@ -2462,7 +2479,7 @@ public class BLTAurasModule : MBSubModuleBase
             void Cleanup()
             {
                 if (triggered && ShowContour)
-                    try { trackedAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                    try { SafeSetContourColor(trackedAgent, null, false); } catch { }
                 triggered = false;
             }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
@@ -2570,7 +2587,7 @@ public class BLTAurasModule : MBSubModuleBase
                 var heroAgent = hero.GetAgent();
                 if (heroAgent == null || !heroAgent.IsActive())
                 {
-                    foreach (var a in lastInRange) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                    foreach (var a in lastInRange) try { SafeSetContourColor(a, null, false); } catch { }
                     lastInRange.Clear();
                     return;
                 }
@@ -2585,12 +2602,12 @@ public class BLTAurasModule : MBSubModuleBase
                     .Take(Math.Max(1, maxAgents)));
 
                 foreach (var a in lastInRange)
-                    if (!nowInRange.Contains(a)) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                    if (!nowInRange.Contains(a)) try { SafeSetContourColor(a, null, false); } catch { }
 
                 if (ShowHealContour)
                 {
                     uint color = Convert.ToUInt32(HealContourColor, 16);
-                    foreach (var a in nowInRange) try { a.AgentVisuals?.SetContourColor(color, true); } catch { }
+                    foreach (var a in nowInRange) try { SafeSetContourColor(a, color, true); } catch { }
                 }
                 foreach (var ally in nowInRange)
                 {
@@ -2603,7 +2620,7 @@ public class BLTAurasModule : MBSubModuleBase
 
             void Cleanup()
             {
-                foreach (var a in lastInRange) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                foreach (var a in lastInRange) try { SafeSetContourColor(a, null, false); } catch { }
                 lastInRange.Clear();
             }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
@@ -2661,7 +2678,7 @@ public class BLTAurasModule : MBSubModuleBase
                 var heroAgent = hero.GetAgent();
                 if (heroAgent == null || !heroAgent.IsActive())
                 {
-                    foreach (var a in lastInRange) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                    foreach (var a in lastInRange) try { SafeSetContourColor(a, null, false); } catch { }
                     lastInRange.Clear();
                     return;
                 }
@@ -2677,12 +2694,12 @@ public class BLTAurasModule : MBSubModuleBase
                     .Take(Math.Max(1, maxAgents)));
 
                 foreach (var a in lastInRange)
-                    if (!nowInRange.Contains(a)) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                    if (!nowInRange.Contains(a)) try { SafeSetContourColor(a, null, false); } catch { }
 
                 if (ShowDamageContour)
                 {
                     uint color = Convert.ToUInt32(DamageContourColor, 16);
-                    foreach (var a in nowInRange) try { a.AgentVisuals?.SetContourColor(color, true); } catch { }
+                    foreach (var a in nowInRange) try { SafeSetContourColor(a, color, true); } catch { }
                 }
                 foreach (var enemy in nowInRange)
                 {
@@ -2707,7 +2724,7 @@ public class BLTAurasModule : MBSubModuleBase
 
             void Cleanup()
             {
-                foreach (var a in lastInRange) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                foreach (var a in lastInRange) try { SafeSetContourColor(a, null, false); } catch { }
                 lastInRange.Clear();
             }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
@@ -2855,7 +2872,7 @@ public class BLTAurasModule : MBSubModuleBase
                     if (!nowInRange.Contains(a))
                     {
                         RestoreAgent(a);
-                        if (ShowContour) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                        if (ShowContour) try { SafeSetContourColor(a, null, false); } catch { }
                     }
                 }
                 if (speedSlowPercent > 0f || attackSlowPercent > 0f)
@@ -2865,7 +2882,7 @@ public class BLTAurasModule : MBSubModuleBase
                 if (ShowContour)
                 {
                     uint color = Convert.ToUInt32(ContourColor, 16);
-                    foreach (var a in nowInRange) try { a.AgentVisuals?.SetContourColor(color, true); } catch { }
+                    foreach (var a in nowInRange) try { SafeSetContourColor(a, color, true); } catch { }
                 }
                 cursedAgents.Clear();
                 foreach (var a in nowInRange) cursedAgents.Add(a);
@@ -3020,7 +3037,7 @@ public class BLTAurasModule : MBSubModuleBase
                 var heroAgent = hero.GetAgent();
                 if (heroAgent == null || !heroAgent.IsActive())
                 {
-                    foreach (var a in buffedAgents) { RemoveBuff(a, damageBonusPercent, armorBonusPercent, moveSpeedBonusPercent, attackSpeedBonusPercent); if (ShowContour) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { } }
+                    foreach (var a in buffedAgents) { RemoveBuff(a, damageBonusPercent, armorBonusPercent, moveSpeedBonusPercent, attackSpeedBonusPercent); if (ShowContour) try { SafeSetContourColor(a, null, false); } catch { } }
                     buffedAgents.Clear();
                     return;
                 }
@@ -3035,7 +3052,7 @@ public class BLTAurasModule : MBSubModuleBase
                     .Take(Math.Max(1, maxAgents)));
 
                 foreach (var a in buffedAgents)
-                    if (!nowInRange.Contains(a)) { RemoveBuff(a, damageBonusPercent, armorBonusPercent, moveSpeedBonusPercent, attackSpeedBonusPercent); if (ShowContour) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { } }
+                    if (!nowInRange.Contains(a)) { RemoveBuff(a, damageBonusPercent, armorBonusPercent, moveSpeedBonusPercent, attackSpeedBonusPercent); if (ShowContour) try { SafeSetContourColor(a, null, false); } catch { } }
 
                 foreach (var a in nowInRange)
                     if (!buffedAgents.Contains(a)) ApplyBuff(a, damageBonusPercent, armorBonusPercent, moveSpeedBonusPercent, attackSpeedBonusPercent);
@@ -3043,7 +3060,7 @@ public class BLTAurasModule : MBSubModuleBase
                 if (ShowContour)
                 {
                     uint color = Convert.ToUInt32(ContourColor, 16);
-                    foreach (var a in nowInRange) try { a.AgentVisuals?.SetContourColor(color, true); } catch { }
+                    foreach (var a in nowInRange) try { SafeSetContourColor(a, color, true); } catch { }
                 }
                 buffedAgents.Clear();
                 foreach (var a in nowInRange) buffedAgents.Add(a);
@@ -3051,7 +3068,7 @@ public class BLTAurasModule : MBSubModuleBase
 
             void Cleanup()
             {
-                foreach (var a in buffedAgents) { RemoveBuff(a, damageBonusPercent, armorBonusPercent, moveSpeedBonusPercent, attackSpeedBonusPercent); if (ShowContour) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { } }
+                foreach (var a in buffedAgents) { RemoveBuff(a, damageBonusPercent, armorBonusPercent, moveSpeedBonusPercent, attackSpeedBonusPercent); if (ShowContour) try { SafeSetContourColor(a, null, false); } catch { } }
                 buffedAgents.Clear();
             }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
@@ -3520,8 +3537,8 @@ public class BLTAurasModule : MBSubModuleBase
                 if (RefreshOnHit || !burningAgents.ContainsKey(victim)) burningAgents[victim] = burnDurationTicks;
                 if (ShowContour)
                 {
-                    try { victim.AgentVisuals?.SetContourColor(Convert.ToUInt32(ContourColor, 16), true); }
-                    catch { victim.AgentVisuals?.SetContourColor(0xFFFF4400u, true); }
+                    try { SafeSetContourColor(victim, Convert.ToUInt32(ContourColor, 16), true); }
+                    catch { SafeSetContourColor(victim, 0xFFFF4400u, true); }
                 }
                 // Efekt eksplozji ognia przy trafieniu
                 try
@@ -3543,7 +3560,7 @@ public class BLTAurasModule : MBSubModuleBase
                 if (heroAgent == null) return;
                 foreach (var key in burningAgents.Keys.ToList())
                 {
-                    if (key == null || !key.IsActive()) { if (ShowContour) try { key?.AgentVisuals?.SetContourColor(null, false); } catch { } burningAgents.Remove(key); continue; }
+                    if (key == null || !key.IsActive()) { if (ShowContour) try { SafeSetContourColor(key, null, false); } catch { } burningAgents.Remove(key); continue; }
                     try
                     {
                         var dir = Vec3.Up;
@@ -3559,13 +3576,13 @@ public class BLTAurasModule : MBSubModuleBase
                     }
                     catch { }
                     burningAgents[key]--;
-                    if (burningAgents[key] <= 0) { if (ShowContour) try { key.AgentVisuals?.SetContourColor(null, false); } catch { } burningAgents.Remove(key); }
+                    if (burningAgents[key] <= 0) { if (ShowContour) try { SafeSetContourColor(key, null, false); } catch { } burningAgents.Remove(key); }
                 }
             };
 
             void Cleanup()
             {
-                if (ShowContour) foreach (var a in burningAgents.Keys) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                if (ShowContour) foreach (var a in burningAgents.Keys) try { SafeSetContourColor(a, null, false); } catch { }
                 burningAgents.Clear();
             }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
@@ -3612,7 +3629,7 @@ public class BLTAurasModule : MBSubModuleBase
                 }
                 frostedAgents[victim] = frostDurationTicks;
                 try { victim.SetMaximumSpeedLimit(slowSpeedLimit, false); } catch { }
-                if (ShowContour) try { victim.AgentVisuals?.SetContourColor(Convert.ToUInt32(ContourColor, 16), true); } catch { }
+                if (ShowContour) try { SafeSetContourColor(victim, Convert.ToUInt32(ContourColor, 16), true); } catch { }
             };
 
             handlers.OnSlowTick += dt =>
@@ -3621,14 +3638,14 @@ public class BLTAurasModule : MBSubModuleBase
                 {
                     if (key == null || !key.IsActive())
                     {
-                        if (ShowContour) try { key?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                        if (ShowContour) try { SafeSetContourColor(key, null, false); } catch { }
                         frostedAgents.Remove(key); continue;
                     }
                     frostedAgents[key]--;
                     if (frostedAgents[key] <= 0)
                     {
                         try { key.SetMaximumSpeedLimit(-1f, false); } catch { }
-                        if (ShowContour) try { key.AgentVisuals?.SetContourColor(null, false); } catch { }
+                        if (ShowContour) try { SafeSetContourColor(key, null, false); } catch { }
                         frostedAgents.Remove(key);
                     }
                 }
@@ -3639,7 +3656,7 @@ public class BLTAurasModule : MBSubModuleBase
                 foreach (var a in frostedAgents.Keys)
                 {
                     try { a?.SetMaximumSpeedLimit(-1f, false); } catch { }
-                    if (ShowContour) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                    if (ShowContour) try { SafeSetContourColor(a, null, false); } catch { }
                 }
                 frostedAgents.Clear();
             }
@@ -3686,7 +3703,7 @@ public class BLTAurasModule : MBSubModuleBase
                 if (ShowContour)
                 {
                     drainedAgents[victim] = ContourDurationTicks;
-                    try { victim.AgentVisuals?.SetContourColor(Convert.ToUInt32(ContourColor, 16), true); } catch { }
+                    try { SafeSetContourColor(victim, Convert.ToUInt32(ContourColor, 16), true); } catch { }
                 }
             };
 
@@ -3694,15 +3711,15 @@ public class BLTAurasModule : MBSubModuleBase
             {
                 foreach (var key in drainedAgents.Keys.ToList())
                 {
-                    if (key == null || !key.IsActive()) { try { key?.AgentVisuals?.SetContourColor(null, false); } catch { } drainedAgents.Remove(key); continue; }
+                    if (key == null || !key.IsActive()) { try { SafeSetContourColor(key, null, false); } catch { } drainedAgents.Remove(key); continue; }
                     drainedAgents[key]--;
-                    if (drainedAgents[key] <= 0) { try { key.AgentVisuals?.SetContourColor(null, false); } catch { } drainedAgents.Remove(key); }
+                    if (drainedAgents[key] <= 0) { try { SafeSetContourColor(key, null, false); } catch { } drainedAgents.Remove(key); }
                 }
             };
 
             void Cleanup()
             {
-                foreach (var a in drainedAgents.Keys) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                foreach (var a in drainedAgents.Keys) try { SafeSetContourColor(a, null, false); } catch { }
                 drainedAgents.Clear();
             }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
@@ -3770,7 +3787,7 @@ public class BLTAurasModule : MBSubModuleBase
                     }
                     catch { }
                     zappedAgents[target] = ContourDurationTicks;
-                    if (ShowContour) try { target.AgentVisuals?.SetContourColor(Convert.ToUInt32(ContourColor, 16), true); } catch { }
+                    if (ShowContour) try { SafeSetContourColor(target, Convert.ToUInt32(ContourColor, 16), true); } catch { }
                 }
             };
 
@@ -3778,15 +3795,15 @@ public class BLTAurasModule : MBSubModuleBase
             {
                 foreach (var key in zappedAgents.Keys.ToList())
                 {
-                    if (key == null || !key.IsActive()) { if (ShowContour) try { key?.AgentVisuals?.SetContourColor(null, false); } catch { } zappedAgents.Remove(key); continue; }
+                    if (key == null || !key.IsActive()) { if (ShowContour) try { SafeSetContourColor(key, null, false); } catch { } zappedAgents.Remove(key); continue; }
                     zappedAgents[key]--;
-                    if (zappedAgents[key] <= 0) { if (ShowContour) try { key.AgentVisuals?.SetContourColor(null, false); } catch { } zappedAgents.Remove(key); }
+                    if (zappedAgents[key] <= 0) { if (ShowContour) try { SafeSetContourColor(key, null, false); } catch { } zappedAgents.Remove(key); }
                 }
             };
 
             void Cleanup()
             {
-                if (ShowContour) foreach (var a in zappedAgents.Keys) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                if (ShowContour) foreach (var a in zappedAgents.Keys) try { SafeSetContourColor(a, null, false); } catch { }
                 zappedAgents.Clear();
             }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
@@ -3833,7 +3850,7 @@ public class BLTAurasModule : MBSubModuleBase
                 }
                 int stacks = bleedingAgents.TryGetValue(victim, out var cur) ? Math.Min(cur.stacks + 1, MaxStacks) : 1;
                 bleedingAgents[victim] = (BleedDurationTicks, stacks);
-                if (ShowContour) try { victim.AgentVisuals?.SetContourColor(Convert.ToUInt32(ContourColor, 16), true); } catch { }
+                if (ShowContour) try { SafeSetContourColor(victim, Convert.ToUInt32(ContourColor, 16), true); } catch { }
             };
 
             handlers.OnSlowTick += dt =>
@@ -3842,7 +3859,7 @@ public class BLTAurasModule : MBSubModuleBase
                 if (heroAgent == null) return;
                 foreach (var key in bleedingAgents.Keys.ToList())
                 {
-                    if (key == null || !key.IsActive()) { if (ShowContour) try { key?.AgentVisuals?.SetContourColor(null, false); } catch { } bleedingAgents.Remove(key); continue; }
+                    if (key == null || !key.IsActive()) { if (ShowContour) try { SafeSetContourColor(key, null, false); } catch { } bleedingAgents.Remove(key); continue; }
                     var (ticks, stacks) = bleedingAgents[key];
                     try
                     {
@@ -3860,14 +3877,14 @@ public class BLTAurasModule : MBSubModuleBase
                     }
                     catch { }
                     ticks--;
-                    if (ticks <= 0) { if (ShowContour) try { key.AgentVisuals?.SetContourColor(null, false); } catch { } bleedingAgents.Remove(key); }
+                    if (ticks <= 0) { if (ShowContour) try { SafeSetContourColor(key, null, false); } catch { } bleedingAgents.Remove(key); }
                     else bleedingAgents[key] = (ticks, stacks);
                 }
             };
 
             void Cleanup()
             {
-                if (ShowContour) foreach (var a in bleedingAgents.Keys) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                if (ShowContour) foreach (var a in bleedingAgents.Keys) try { SafeSetContourColor(a, null, false); } catch { }
                 bleedingAgents.Clear();
             }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
@@ -3920,7 +3937,7 @@ public class BLTAurasModule : MBSubModuleBase
                     lastContourUpdate = now;
 
                     foreach (var a in fearedAgents.ToList())
-                        if (a == null || !a.IsActive()) { if (ShowContour) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { } fearedAgents.Remove(a); lastFearTime.Remove(a); }
+                        if (a == null || !a.IsActive()) { if (ShowContour) try { SafeSetContourColor(a, null, false); } catch { } fearedAgents.Remove(a); lastFearTime.Remove(a); }
 
                     var inRange = Mission.Current?.Agents
                         ?.Where(a => a != null && a.IsActive() && a.IsEnemyOf(heroAgent)
@@ -3933,15 +3950,15 @@ public class BLTAurasModule : MBSubModuleBase
                     foreach (var enemy in inRange)
                     {
                         fearedAgents.Add(enemy);
-                        if (ShowContour) try { enemy.AgentVisuals?.SetContourColor(Convert.ToUInt32(ContourColor, 16), true); } catch { }
+                        if (ShowContour) try { SafeSetContourColor(enemy, Convert.ToUInt32(ContourColor, 16), true); } catch { }
                     }
 
                     foreach (var a in fearedAgents.ToList())
                     {
-                        if (a == null || !a.IsActive()) { if (ShowContour) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { } fearedAgents.Remove(a); lastFearTime.Remove(a); continue; }
+                        if (a == null || !a.IsActive()) { if (ShowContour) try { SafeSetContourColor(a, null, false); } catch { } fearedAgents.Remove(a); lastFearTime.Remove(a); continue; }
                         if (a.Position.Distance(heroAgent.Position) > Radius)
                         {
-                            if (ShowContour) try { a.AgentVisuals?.SetContourColor(null, false); } catch { }
+                            if (ShowContour) try { SafeSetContourColor(a, null, false); } catch { }
                             fearedAgents.Remove(a); lastFearTime.Remove(a);
                         }
                     }
@@ -3967,7 +3984,7 @@ public class BLTAurasModule : MBSubModuleBase
 
             void Cleanup()
             {
-                if (ShowContour) foreach (var a in fearedAgents) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                if (ShowContour) foreach (var a in fearedAgents) try { SafeSetContourColor(a, null, false); } catch { }
                 fearedAgents.Clear(); lastFearTime.Clear();
             }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
@@ -4025,7 +4042,7 @@ public class BLTAurasModule : MBSubModuleBase
                 {
                     if (a == null || !a.IsActive() || !inRange.Contains(a))
                     {
-                        try { a?.SetMaximumSpeedLimit(-1f, false); if (ShowContour) a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                        try { a?.SetMaximumSpeedLimit(-1f, false); if (ShowContour) SafeSetContourColor(a, null, false); } catch { }
                         slowedAgents.Remove(a);
                     }
                 }
@@ -4034,7 +4051,7 @@ public class BLTAurasModule : MBSubModuleBase
                 {
                     if (!slowedAgents.Contains(a))
                     {
-                        try { a.SetMaximumSpeedLimit(SlowSpeedLimit, false); if (ShowContour) a.AgentVisuals?.SetContourColor(Convert.ToUInt32(ContourColor, 16), true); } catch { }
+                        try { a.SetMaximumSpeedLimit(SlowSpeedLimit, false); if (ShowContour) SafeSetContourColor(a, Convert.ToUInt32(ContourColor, 16), true); } catch { }
                         slowedAgents.Add(a);
                     }
                 }
@@ -4044,7 +4061,7 @@ public class BLTAurasModule : MBSubModuleBase
             {
                 foreach (var a in slowedAgents)
                 {
-                    try { a?.SetMaximumSpeedLimit(-1f, false); if (ShowContour) a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                    try { a?.SetMaximumSpeedLimit(-1f, false); if (ShowContour) SafeSetContourColor(a, null, false); } catch { }
                 }
                 slowedAgents.Clear();
             }
@@ -4104,7 +4121,7 @@ public class BLTAurasModule : MBSubModuleBase
                 {
                     if (a == null || !a.IsActive() || !inRange.Contains(a))
                     {
-                        if (ShowContour) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                        if (ShowContour) try { SafeSetContourColor(a, null, false); } catch { }
                         weakenedAgents.Remove(a);
                     }
                 }
@@ -4113,7 +4130,7 @@ public class BLTAurasModule : MBSubModuleBase
                 {
                     if (!weakenedAgents.Contains(a))
                     {
-                        if (ShowContour) try { a.AgentVisuals?.SetContourColor(Convert.ToUInt32(ContourColor, 16), true); } catch { }
+                        if (ShowContour) try { SafeSetContourColor(a, Convert.ToUInt32(ContourColor, 16), true); } catch { }
                         weakenedAgents.Add(a);
                     }
                 }
@@ -4129,7 +4146,7 @@ public class BLTAurasModule : MBSubModuleBase
 
             void Cleanup()
             {
-                if (ShowContour) foreach (var a in weakenedAgents) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                if (ShowContour) foreach (var a in weakenedAgents) try { SafeSetContourColor(a, null, false); } catch { }
                 weakenedAgents.Clear();
             }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
@@ -4188,7 +4205,7 @@ public class BLTAurasModule : MBSubModuleBase
                 {
                     if (a == null || !a.IsActive() || !inRange.Contains(a))
                     {
-                        try { a?.SetMaximumSpeedLimit(-1f, false); if (ShowContour) a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                        try { a?.SetMaximumSpeedLimit(-1f, false); if (ShowContour) SafeSetContourColor(a, null, false); } catch { }
                         boostedAgents.Remove(a);
                     }
                 }
@@ -4197,7 +4214,7 @@ public class BLTAurasModule : MBSubModuleBase
                 {
                     if (!a.HasMount && !boostedAgents.Contains(a))
                     {
-                        try { a.SetMaximumSpeedLimit(SpeedBoostMultiplier, false); if (ShowContour) a.AgentVisuals?.SetContourColor(Convert.ToUInt32(ContourColor, 16), true); } catch { }
+                        try { a.SetMaximumSpeedLimit(SpeedBoostMultiplier, false); if (ShowContour) SafeSetContourColor(a, Convert.ToUInt32(ContourColor, 16), true); } catch { }
                         boostedAgents.Add(a);
                     }
                 }
@@ -4207,7 +4224,7 @@ public class BLTAurasModule : MBSubModuleBase
             {
                 foreach (var a in boostedAgents)
                 {
-                    try { a?.SetMaximumSpeedLimit(-1f, false); if (ShowContour) a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                    try { a?.SetMaximumSpeedLimit(-1f, false); if (ShowContour) SafeSetContourColor(a, null, false); } catch { }
                 }
                 boostedAgents.Clear();
             }
@@ -4255,7 +4272,7 @@ public class BLTAurasModule : MBSubModuleBase
                 {
                     stacks = Math.Min(stacks + 1, MaxStacks);
                     ticksRemaining = StackDurationTicks;
-                    if (ShowContour) try { heroAgent.AgentVisuals?.SetContourColor(Convert.ToUInt32(ContourColor, 16), true); } catch { }
+                    if (ShowContour) try { SafeSetContourColor(heroAgent, Convert.ToUInt32(ContourColor, 16), true); } catch { }
                     Log.ShowInformation($"BLOOD RAGE! {hero.Name} — {stacks} stacks ({stacks * DamageBonusPerStack:0}% bonus dmg)", hero.CharacterObject);
                 }
                 // Apply damage bonus
@@ -4278,7 +4295,7 @@ public class BLTAurasModule : MBSubModuleBase
                     if (stacks == 0)
                     {
                         var heroAgent = hero.GetAgent();
-                        if (ShowContour) try { heroAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                        if (ShowContour) try { SafeSetContourColor(heroAgent, null, false); } catch { }
                     }
                 }
             };
@@ -4287,7 +4304,7 @@ public class BLTAurasModule : MBSubModuleBase
             {
                 stacks = 0;
                 var heroAgent = hero.GetAgent();
-                if (ShowContour) try { heroAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                if (ShowContour) try { SafeSetContourColor(heroAgent, null, false); } catch { }
             }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
             handlers.OnMissionOver += Cleanup;
@@ -4442,13 +4459,13 @@ public class BLTAurasModule : MBSubModuleBase
                 {
                     activeUntil = -1f;
                     nextActivation = now + CooldownSeconds;
-                    if (ShowContour) try { heroAgent.AgentVisuals?.SetContourColor(null, false); } catch { }
+                    if (ShowContour) try { SafeSetContourColor(heroAgent, null, false); } catch { }
                 }
 
                 if (activeUntil < 0f && now >= nextActivation)
                 {
                     activeUntil = now + ActiveDurationSeconds;
-                    if (ShowContour) try { heroAgent.AgentVisuals?.SetContourColor(Convert.ToUInt32(ContourColor, 16), true); } catch { }
+                    if (ShowContour) try { SafeSetContourColor(heroAgent, Convert.ToUInt32(ContourColor, 16), true); } catch { }
                     Log.ShowInformation($"IRON SKIN! {hero.Name} hardens for {ActiveDurationSeconds:0}s!", hero.CharacterObject);
                 }
             };
@@ -4467,7 +4484,7 @@ public class BLTAurasModule : MBSubModuleBase
             void Cleanup()
             {
                 var heroAgent = hero.GetAgent();
-                if (ShowContour) try { heroAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                if (ShowContour) try { SafeSetContourColor(heroAgent, null, false); } catch { }
             }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
             handlers.OnMissionOver += Cleanup;
@@ -4505,7 +4522,7 @@ public class BLTAurasModule : MBSubModuleBase
                 if (heroAgent == null || attacker != heroAgent || victim == null || !victim.IsActive()) return;
                 try
                 {
-                    if (ShowContour) victim.AgentVisuals?.SetContourColor(color, true);
+                    if (ShowContour) SafeSetContourColor(victim, color, true);
                     victim.SetMaximumSpeedLimit(0f, false);
                     float until = (Mission.Current?.CurrentTime ?? 0f) + StunDuration;
                     handlers.OnMissionTick += dt =>
@@ -4557,7 +4574,7 @@ public class BLTAurasModule : MBSubModuleBase
                 if (active && now >= activeUntil)
                 {
                     active = false;
-                    if (ShowContour) try { heroAgent.AgentVisuals?.SetContourColor(null, false); } catch { }
+                    if (ShowContour) try { SafeSetContourColor(heroAgent, null, false); } catch { }
                 }
 
                 if (!active && now - lastActivation >= CooldownSeconds)
@@ -4565,7 +4582,7 @@ public class BLTAurasModule : MBSubModuleBase
                     lastActivation = now;
                     activeUntil = now + InvulnerabilitySeconds;
                     active = true;
-                    if (ShowContour) try { heroAgent.AgentVisuals?.SetContourColor(color, true); } catch { }
+                    if (ShowContour) try { SafeSetContourColor(heroAgent, color, true); } catch { }
                 }
 
                 if (active)
@@ -4577,7 +4594,7 @@ public class BLTAurasModule : MBSubModuleBase
             void Cleanup()
             {
                 var heroAgent = hero.GetAgent();
-                if (ShowContour) try { heroAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                if (ShowContour) try { SafeSetContourColor(heroAgent, null, false); } catch { }
             }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
             handlers.OnMissionOver += Cleanup;
@@ -4624,7 +4641,7 @@ public class BLTAurasModule : MBSubModuleBase
                 if (contourUntil > 0f && now >= contourUntil)
                 {
                     contourUntil = -1f;
-                    if (ShowContour) try { heroAgent.AgentVisuals?.SetContourColor(null, false); } catch { }
+                    if (ShowContour) try { SafeSetContourColor(heroAgent, null, false); } catch { }
                 }
 
                 float hpPct = heroAgent.Health / heroAgent.HealthLimit * 100f;
@@ -4634,7 +4651,7 @@ public class BLTAurasModule : MBSubModuleBase
                     float healAmount = heroAgent.HealthLimit * HealPercent / 100f;
                     heroAgent.Health = Math.Min(heroAgent.Health + healAmount, heroAgent.HealthLimit);
                     contourUntil = now + ContourDuration;
-                    if (ShowContour) try { heroAgent.AgentVisuals?.SetContourColor(color, true); } catch { }
+                    if (ShowContour) try { SafeSetContourColor(heroAgent, color, true); } catch { }
                     Log.ShowInformation($"{hero.Name}: Second Wind!", hero.CharacterObject);
                 }
             };
@@ -4642,7 +4659,7 @@ public class BLTAurasModule : MBSubModuleBase
             void Cleanup()
             {
                 var heroAgent = hero.GetAgent();
-                if (ShowContour) try { heroAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                if (ShowContour) try { SafeSetContourColor(heroAgent, null, false); } catch { }
             }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
             handlers.OnMissionOver += Cleanup;
@@ -4691,7 +4708,7 @@ public class BLTAurasModule : MBSubModuleBase
                     lastDodge = now;
                     contourUntil = now + ContourDuration;
                     blowParams.blow.InflictedDamage = 0;
-                    if (ShowContour) try { heroAgent.AgentVisuals?.SetContourColor(color, true); } catch { }
+                    if (ShowContour) try { SafeSetContourColor(heroAgent, color, true); } catch { }
                 }
             };
 
@@ -4703,14 +4720,14 @@ public class BLTAurasModule : MBSubModuleBase
                 if (contourUntil > 0f && now >= contourUntil)
                 {
                     contourUntil = -1f;
-                    if (ShowContour) try { heroAgent.AgentVisuals?.SetContourColor(null, false); } catch { }
+                    if (ShowContour) try { SafeSetContourColor(heroAgent, null, false); } catch { }
                 }
             };
 
             void Cleanup()
             {
                 var heroAgent = hero.GetAgent();
-                if (ShowContour) try { heroAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                if (ShowContour) try { SafeSetContourColor(heroAgent, null, false); } catch { }
             }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
             handlers.OnMissionOver += Cleanup;
@@ -4756,7 +4773,7 @@ public class BLTAurasModule : MBSubModuleBase
                         float mult = 1f + BonusPercent / 100f;
                         blowParams.blow.BaseMagnitude *= mult;
                         blowParams.blow.InflictedDamage = (int)(blowParams.blow.InflictedDamage * mult);
-                        if (ShowContour) victim.AgentVisuals?.SetContourColor(color, true);
+                        if (ShowContour) SafeSetContourColor(victim, color, true);
                     }
                 }
                 catch { }
@@ -4801,7 +4818,7 @@ public class BLTAurasModule : MBSubModuleBase
                         float mult = 1f + BonusPercent / 100f;
                         blowParams.blow.BaseMagnitude *= mult;
                         blowParams.blow.InflictedDamage = (int)(blowParams.blow.InflictedDamage * mult);
-                        if (ShowContour) victim.AgentVisuals?.SetContourColor(color, true);
+                        if (ShowContour) SafeSetContourColor(victim, color, true);
                     }
                 }
                 catch { }
@@ -4849,7 +4866,7 @@ public class BLTAurasModule : MBSubModuleBase
 
                 try
                 {
-                    if (ShowContour) heroAgent.AgentVisuals?.SetContourColor(color, true);
+                    if (ShowContour) SafeSetContourColor(heroAgent, color, true);
                     var pos = heroAgent.Position;
                     foreach (var a in Mission.Current.Agents.ToList())
                     {
@@ -4858,7 +4875,7 @@ public class BLTAurasModule : MBSubModuleBase
                         try
                         {
                             var dir = (a.Position - pos).NormalizedCopy();
-                            if (ShowContour) a.AgentVisuals?.SetContourColor(color, true);
+                            if (ShowContour) SafeSetContourColor(a, color, true);
                         }
                         catch { }
                     }
@@ -4869,7 +4886,7 @@ public class BLTAurasModule : MBSubModuleBase
             void Cleanup()
             {
                 var heroAgent = hero.GetAgent();
-                if (ShowContour) try { heroAgent?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                if (ShowContour) try { SafeSetContourColor(heroAgent, null, false); } catch { }
             }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
             handlers.OnMissionOver += Cleanup;
@@ -4918,7 +4935,7 @@ public class BLTAurasModule : MBSubModuleBase
                 {
                     if (a == null || !a.IsActive() || !inRange.Contains(a))
                     {
-                        try { a?.SetMaximumSpeedLimit(-1f, false); if (ShowContour) a?.AgentVisuals?.SetContourColor(null, false); } catch { }
+                        try { a?.SetMaximumSpeedLimit(-1f, false); if (ShowContour) SafeSetContourColor(a, null, false); } catch { }
                         boosted.Remove(a);
                     }
                 }
@@ -4926,13 +4943,13 @@ public class BLTAurasModule : MBSubModuleBase
                 {
                     if (!a.HasMount && !boosted.Contains(a))
                     {
-                        try { a.SetMaximumSpeedLimit(SpeedMult, false); if (ShowContour) a.AgentVisuals?.SetContourColor(color, true); } catch { }
+                        try { a.SetMaximumSpeedLimit(SpeedMult, false); if (ShowContour) SafeSetContourColor(a, color, true); } catch { }
                         boosted.Add(a);
                     }
                 }
             };
 
-            void Cleanup() { foreach (var a in boosted) { try { a?.SetMaximumSpeedLimit(-1f, false); if (ShowContour) a?.AgentVisuals?.SetContourColor(null, false); } catch { } } boosted.Clear(); }
+            void Cleanup() { foreach (var a in boosted) { try { a?.SetMaximumSpeedLimit(-1f, false); if (ShowContour) SafeSetContourColor(a, null, false); } catch { } } boosted.Clear(); }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
             handlers.OnMissionOver += Cleanup;
         }
@@ -4979,12 +4996,12 @@ public class BLTAurasModule : MBSubModuleBase
                 foreach (var a in marked.ToList())
                 {
                     if (a == null || !a.IsActive() || !inRange.Contains(a))
-                    { if (ShowContour) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { } marked.Remove(a); }
+                    { if (ShowContour) try { SafeSetContourColor(a, null, false); } catch { } marked.Remove(a); }
                 }
                 foreach (var a in inRange)
                 {
                     if (!marked.Contains(a))
-                    { if (ShowContour) try { a.AgentVisuals?.SetContourColor(color, true); } catch { } marked.Add(a); }
+                    { if (ShowContour) try { SafeSetContourColor(a, color, true); } catch { } marked.Add(a); }
                 }
             };
 
@@ -4996,7 +5013,7 @@ public class BLTAurasModule : MBSubModuleBase
                 blowParams.blow.InflictedDamage = (int)(blowParams.blow.InflictedDamage * mult);
             };
 
-            void Cleanup() { foreach (var a in marked) { if (ShowContour) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { } } marked.Clear(); }
+            void Cleanup() { foreach (var a in marked) { if (ShowContour) try { SafeSetContourColor(a, null, false); } catch { } } marked.Clear(); }
             if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => Cleanup();
             handlers.OnMissionOver += Cleanup;
         }
@@ -5041,7 +5058,7 @@ public class BLTAurasModule : MBSubModuleBase
 
                 used = true;
                 Log.ShowInformation($"RALLYING CRY! {hero.Name} rallies the troops!", hero.CharacterObject);
-                if (ShowContour) try { heroAgent.AgentVisuals?.SetContourColor(color, true); } catch { }
+                if (ShowContour) try { SafeSetContourColor(heroAgent, color, true); } catch { }
 
                 foreach (var a in Mission.Current?.Agents?.ToList() ?? new List<Agent>())
                 {
@@ -5050,7 +5067,7 @@ public class BLTAurasModule : MBSubModuleBase
                     try
                     {
                         a.Health = Math.Min(a.Health + HealAmount, a.HealthLimit);
-                        if (ShowContour) a.AgentVisuals?.SetContourColor(color, true);
+                        if (ShowContour) SafeSetContourColor(a, color, true);
                     }
                     catch { }
                 }
@@ -5144,7 +5161,7 @@ public class BLTAurasModule : MBSubModuleBase
                     {
                         if (a == null || !a.IsActive() || a.IsMount || a.IsEnemyOf(heroAgent)) continue;
                         if (a.Position.Distance(heroAgent.Position) > range) continue;
-                        try { a.Health = Math.Min(a.Health + magnitude, a.HealthLimit); if (ShowContour) a.AgentVisuals?.SetContourColor(color, true); }
+                        try { a.Health = Math.Min(a.Health + magnitude, a.HealthLimit); if (ShowContour) SafeSetContourColor(a, color, true); }
                         catch { }
                     }
                 };
@@ -5182,7 +5199,7 @@ public class BLTAurasModule : MBSubModuleBase
                                 VictimBodyPart = BoneBodyPartType.Chest,
                             };
                             a.RegisterBlow(blow, AgentHelpers.CreateCollisionDataFromBlow(heroAgent, a, blow));
-                            if (ShowContour) a.AgentVisuals?.SetContourColor(color, true);
+                            if (ShowContour) SafeSetContourColor(a, color, true);
                         }
                         catch { }
                     }
@@ -5202,9 +5219,9 @@ public class BLTAurasModule : MBSubModuleBase
                         ?.Where(a => a != null && a.IsActive() && a.IsEnemyOf(heroAgent)
                                      && a.Position.Distance(heroAgent.Position) <= range) ?? Enumerable.Empty<Agent>());
                     foreach (var a in marked.ToList())
-                        if (!inRange.Contains(a)) { if (ShowContour) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { } marked.Remove(a); }
+                        if (!inRange.Contains(a)) { if (ShowContour) try { SafeSetContourColor(a, null, false); } catch { } marked.Remove(a); }
                     foreach (var a in inRange)
-                        if (!marked.Contains(a)) { if (ShowContour) try { a.AgentVisuals?.SetContourColor(color, true); } catch { } marked.Add(a); }
+                        if (!marked.Contains(a)) { if (ShowContour) try { SafeSetContourColor(a, color, true); } catch { } marked.Add(a); }
                 };
                 handlers.OnDoDamage += (attacker, victim, blowParams) =>
                 {
@@ -5213,7 +5230,7 @@ public class BLTAurasModule : MBSubModuleBase
                     blowParams.blow.BaseMagnitude *= mult;
                     blowParams.blow.InflictedDamage = (int)(blowParams.blow.InflictedDamage * mult);
                 };
-                void CleanupMark() { foreach (var a in marked) { if (ShowContour) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { } } marked.Clear(); }
+                void CleanupMark() { foreach (var a in marked) { if (ShowContour) try { SafeSetContourColor(a, null, false); } catch { } } marked.Clear(); }
                 if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => CleanupMark();
                 handlers.OnMissionOver += CleanupMark;
                 return;
@@ -5309,7 +5326,7 @@ public class BLTAurasModule : MBSubModuleBase
                     .Take(Math.Max(1, maxAgents)));
 
                 foreach (var a in inAura)
-                    if (!nowIn.Contains(a)) { RemoveEffect(a); if (ShowContour) try { a?.AgentVisuals?.SetContourColor(null, false); } catch { } }
+                    if (!nowIn.Contains(a)) { RemoveEffect(a); if (ShowContour) try { SafeSetContourColor(a, null, false); } catch { } }
 
                 foreach (var a in nowIn)
                 {
@@ -5341,7 +5358,7 @@ public class BLTAurasModule : MBSubModuleBase
                 }
 
                 if (ShowContour)
-                    foreach (var a in nowIn) try { a.AgentVisuals?.SetContourColor(color, true); } catch { }
+                    foreach (var a in nowIn) try { SafeSetContourColor(a, color, true); } catch { }
 
                 inAura.Clear();
                 foreach (var a in nowIn) inAura.Add(a);
@@ -7530,7 +7547,7 @@ public class BLTAurasModule : MBSubModuleBase
 
             ApplyBuff(agent, cfg);
 
-            try { agent.AgentVisuals?.SetContourColor(Convert.ToUInt32("FFFF0000", 16), true); } catch { }
+            try { SafeSetContourColor(agent, Convert.ToUInt32("FFFF0000", 16), true); } catch { }
 
             Log.ShowInformation($"⚡ Adrenaline: {hero.FirstName}!", hero.CharacterObject);
         }
@@ -7609,7 +7626,7 @@ public class BLTAurasModule : MBSubModuleBase
                 catch { }
             }
             if (agent != null) originalStats.Remove(agent);
-            try { agent?.AgentVisuals?.SetContourColor(null, false); } catch { }
+            SafeSetContourColor(agent, null, false); // guards null/IsActive internally - see ContourHelpers
         }
 
         public override void OnAgentDeleted(Agent affectedAgent)
