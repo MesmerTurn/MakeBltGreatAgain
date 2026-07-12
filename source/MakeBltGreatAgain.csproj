@@ -24,6 +24,7 @@
     <Reference Include="TaleWorlds.ObjectSystem"><HintPath>$(BannerlordPath)\bin\Win64_Shipping_Client\TaleWorlds.ObjectSystem.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="TaleWorlds.Localization"><HintPath>$(BannerlordPath)\bin\Win64_Shipping_Client\TaleWorlds.Localization.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="TaleWorlds.DotNet"><HintPath>$(BannerlordPath)\bin\Win64_Shipping_Client\TaleWorlds.DotNet.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SandBox"><HintPath>$(BannerlordPath)\Modules\SandBox\bin\Win64_Shipping_Client\SandBox.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="BannerlordTwitch"><HintPath>$(BLTPath)\bin\Win64_Shipping_Client\BannerlordTwitch.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="BLTAdoptAHero"><HintPath>$(BLTAAHDllPath)</HintPath><Private>false</Private></Reference>
     <Reference Include="System.ComponentModel.DataAnnotations" />

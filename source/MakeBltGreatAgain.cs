@@ -814,6 +814,70 @@ public class BLTGuardModule : MBSubModuleBase
         }
     }
 
+    // Samodzielny system "Normalize Armor" dla turniejów, działający jako Postfix na natywnej metodzie
+    // TournamentFightMissionController.AddRandomClothes - NIE zależy od żadnych fork-owych metod
+    // (ApplyNormalizedArmor/BuildClassLoadout to metody dodane WYŁĄCZNIE w naszym forku, nie istnieją
+    // w oryginalnym DLL Randomchair22 - stąd Postfix na natywnej metodzie zamiast Prefix na nich).
+    // Uruchamia się zawsze PO oryginale (i po ewentualnym własnym NormalizeArmor forka, jeśli DLL jest
+    // forkiem), więc jego wynik jest ostateczny - nadpisuje slot pancerza preferując kulturę bohatera.
+    public class MBGATournamentLoadoutConfig
+    {
+        private const string ID = "MBGA - Tournament Loadout";
+        internal static void Register() => ActionManager.RegisterGlobalConfigType(ID, typeof(MBGATournamentLoadoutConfig));
+        internal static MBGATournamentLoadoutConfig Get() => ActionManager.GetGlobalConfig<MBGATournamentLoadoutConfig>(ID);
+
+        [DisplayName("Normalize Armor"), Description("Give tournament participants matching armor at a fixed tier, preferring each hero's own culture. Standalone MBGA re-implementation of the BLT tournament armor normalization feature."), UsedImplicitly]
+        public bool NormalizeArmor { get; set; } = false;
+
+        [DisplayName("Normalize Armor Tier"), Description("Armor tier (1-6) used when Normalize Armor is enabled."), UsedImplicitly]
+        public int NormalizeArmorTier { get; set; } = 4;
+    }
+
+    [HarmonyPatch]
+    internal static class TournamentCulturePatch
+    {
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(SandBox.Tournaments.MissionLogics.TournamentFightMissionController), "AddRandomClothes")]
+        private static void AddRandomClothesPostfix(CultureObject culture,
+            TaleWorlds.CampaignSystem.TournamentGames.TournamentParticipant participant)
+        {
+            try
+            {
+                var cfg = MBGATournamentLoadoutConfig.Get();
+                if (cfg == null || !cfg.NormalizeArmor || participant == null) return;
+
+                var heroCulture = participant.Character?.HeroObject?.Culture ?? culture;
+                int tier = Math.Max(0, Math.Min(5, cfg.NormalizeArmorTier - 1));
+                foreach (var (slot, itemType) in SkillGroup.ArmorIndexType)
+                {
+                    var item = SelectRandomItemNearestTier(
+                                   CampaignHelpers.AllItems.Where(i => i.Culture == heroCulture && i.ItemType == itemType), tier)
+                               ?? SelectRandomItemNearestTier(
+                                   CampaignHelpers.AllItems.Where(i => i.ItemType == itemType), tier);
+                    if (item != null)
+                        participant.MatchEquipment[slot] = new EquipmentElement(item);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("TournamentCulturePatch.AddRandomClothesPostfix failed", ex);
+            }
+        }
+
+        // EquipHero i GlobalCommonConfig (BLTAdoptAHero) sa klasami internal, wiec ich
+        // SelectRandomItemNearestTier / RestrictedItemIds nie sa dostepne z MBGA - lokalna
+        // reimplementacja tej samej logiki wyboru tieru (bez filtra restricted-item, ktory
+        // wymagalby dostepu do internal configu forka), zeby dzialac niezaleznie od DLL-a BLT.
+        private static ItemObject SelectRandomItemNearestTier(IEnumerable<ItemObject> items, int tier)
+        {
+            var allowed = items.ToList();
+            var atOrBelow = allowed.Where(i => (int)i.Tier <= tier).ToList();
+            if (atOrBelow.Count > 0)
+                return atOrBelow.GroupBy(item => (int)item.Tier).OrderByDescending(g => g.Key).FirstOrDefault()?.SelectRandom();
+            return allowed.GroupBy(item => (int)item.Tier).OrderBy(g => g.Key).FirstOrDefault()?.SelectRandom();
+        }
+    }
+
     // Patch aplikowany RĘCZNIE w BLTAurasModule.OnSubModuleLoad (NIE przez [HarmonyPatch]/PatchAll —
     // 9 modułów MBGA = 9× PatchAll = duplikaty patchy). Mnoży obrażenia szarży konnej gdy adrenalina aktywna.
     internal static class AdrenalineChargePatch
@@ -2054,6 +2118,7 @@ public class BLTAurasModule : MBSubModuleBase
             try { WandererGlobalConfig.Register(); } catch (Exception ex) { Log.Exception("[Wanderer] Register failed", ex); }
             try { AdrenalineGlobalConfig.Register(); } catch (Exception ex) { Log.Exception("[Adrenaline] Register failed", ex); }
             try { HeroBarGlobalConfig.Register(); } catch (Exception ex) { Log.Exception("[HeroBar] Register failed", ex); }
+            try { MBGATournamentLoadoutConfig.Register(); } catch (Exception ex) { Log.Exception("[TournamentLoadout] Register failed", ex); }
         }
 
         protected override void OnSubModuleLoad()
@@ -5462,9 +5527,7 @@ public class BLTAurasModule : MBSubModuleBase
                                 , formationTroopIndex: 0
                                 , isAlarmed: true
                                 , wieldInitialWeapons: true
-#if BLT_1315
                                 , forceDismounted: false
-#endif
                                 , initialPosition: p.Position
                                 , initialDirection: p.HeroAgent.GetMovementDirection()
                             );
@@ -7413,9 +7476,7 @@ public class BLTAurasModule : MBSubModuleBase
                     , formationTroopIndex: 0
                     , isAlarmed: true
                     , wieldInitialWeapons: true
-#if BLT_1315
                     , forceDismounted: false
-#endif
                     , initialPosition: spawnPos
                     , initialDirection: spawnDir
                 );
