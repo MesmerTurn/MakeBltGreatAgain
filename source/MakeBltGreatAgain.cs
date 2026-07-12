@@ -2526,7 +2526,7 @@ public class BLTClanGoldModule : MBSubModuleBase
 
     public class BLTGrailModule : MBSubModuleBase
     {
-        public BLTGrailModule() { GrailConfig.Register(); }
+        public BLTGrailModule() { try { GrailConfig.Register(); } catch (Exception ex) { Log.Exception("[Grail] Register failed", ex); } }
 
         protected override void OnSubModuleLoad()
         {
@@ -2928,18 +2928,12 @@ public class BLTAurasModule : MBSubModuleBase
                 Log.Exception("[BLTAuras] Load failed", ex);
             }
 
-            try
-            {
-                BLTAdoptAHero.BLTExternalStats.CompanionCount     = h => BLTWandererBehavior.CountForHero(h);
-                BLTAdoptAHero.BLTExternalStats.AdrenalineFraction = h => AdrenalineMissionBehavior.RemainingFraction(h);
-                BLTAdoptAHero.BLTExternalStats.DamageDealt        = h => BLTDamageTracker.Get(h);
-                BLTAdoptAHero.BLTExternalStats.GetUseNewHeroBarLayout = () => HeroBarGlobalConfig.Get()?.UseNewHeroBarLayout ?? false;
-                BLTAdoptAHero.BLTExternalStats.GetShowSideBars        = () => HeroBarGlobalConfig.Get()?.ShowSideBars ?? true;
-                BLTAdoptAHero.BLTExternalStats.GetShowMissionOverlay  = () => HeroBarGlobalConfig.Get()?.ShowMissionOverlay ?? true;
-                BLTAdoptAHero.BLTExternalStats.IsWandererHero         = h => BLTWandererBehavior.IsWandererStringId(h?.StringId);
-                BLTAdoptAHero.BLTExternalStats.WandererKillCount      = h => BLTWandererKillTracker.Get(h);
-            }
-            catch (Exception ex) { Log.Exception("[BLTExternalStats] wire failed", ex); }
+            // BLTAdoptAHero.BLTExternalStats to bridge dodany WYLACZNIE w naszym forku (zasila
+            // customowy pasek HUD V2 - HTML/CSS/JS zywy tylko w forku). Nie istnieje w oryginalnym
+            // DLL Randomchair22, wiec nie moze byc bezposrednim odwolaniem w kodzie (blad kompilacji,
+            // nie do naprawienia przez try/catch - to typ nieznaleziony w czasie kompilacji). Skoro
+            // nakladka HUD V2 i tak nie jest portowana do MBGA standalone (wymaga plikow zasobow,
+            // nie tylko kodu), ten blok zostal usuniety zamiast zamieniony na refleksje.
         }
 
         protected override void OnGameStart(Game game, IGameStarter gameStarterObject)
@@ -7569,7 +7563,14 @@ public class BLTAurasModule : MBSubModuleBase
 
                 string oldName = fallen.Name.ToString();
                 beh.InitAdoptedHero(newHero, context.UserName);
-                beh.CloneHeroData(fallen, newHero);
+
+                // CloneHeroData jest dodatkiem WYLACZNIE forka (kopiuje skille/staty/custom itemy
+                // miedzy bohaterami) - nie istnieje w oryginalnym DLL Randomchair22, wiec wolamy przez
+                // refleksje i po prostu pomijamy jesli metoda nie istnieje (nowy bohater zostaje bez
+                // przekopiowanych statow zamiast crashowac cala komende).
+                var cloneMethod = typeof(BLTAdoptAHeroCampaignBehavior).GetMethod("CloneHeroData",
+                    BindingFlags.Public | BindingFlags.Instance);
+                cloneMethod?.Invoke(beh, new object[] { fallen, newHero });
 
                 // Rejoin the old clan, taking over leadership if the fallen hero led it
                 if (fallen.Clan != null)
