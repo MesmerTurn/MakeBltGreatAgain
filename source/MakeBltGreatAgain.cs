@@ -7502,6 +7502,7 @@ public class BLTAurasModule : MBSubModuleBase
             {
                 var cfg = AdrenalineGlobalConfig.Get();
                 if (cfg == null || !cfg.Enabled) return;
+                if (!cfg.AllowInTournaments && MissionHelpers.InTournament()) return;
                 if (affectedAgent == null || !affectedAgent.IsActive() || !affectedAgent.IsHuman) return;
 
                 var hero = affectedAgent.GetAdoptedHero();
@@ -7769,6 +7770,9 @@ public class BLTAurasModule : MBSubModuleBase
 
         [DisplayName("Enabled"), Description("Master switch for the adrenaline system"), UsedImplicitly]
         public bool Enabled { get; set; } = true;
+
+        [DisplayName("Allow In Tournaments"), Description("Whether adrenaline can trigger during tournament fights. Off by default, matching how other BLT powers are disabled in tournaments."), UsedImplicitly]
+        public bool AllowInTournaments { get; set; } = false;
 
         [DisplayName("Adrenaline Chance (%)"), Description("Chance to trigger when HP first drops to the threshold"), UsedImplicitly]
         public float AdrenalineChance { get; set; } = 25f;
