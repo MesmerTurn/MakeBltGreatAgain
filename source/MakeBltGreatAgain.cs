@@ -945,6 +945,43 @@ public class BLTGuardModule : MBSubModuleBase
         }
     }
 
+    // BLTClanDiplomacyBehavior.IsLanded w oryginalnym DLL sprawdza tylko wlasne Fiefs klanu - klan
+    // ktory stracil wszystkie ziemie, ale ma zwasala z ziemia, jest blednie liczony jako "bezziemny"
+    // (np. zle liczy limit sojuszy MaxClanAlliances i zle wykrywa utrate ziemi w CheckFiefLoss, bo obie
+    // metody wewnetrznie wolaja IsLanded). Fork poprawia to uwzgledniajac zwasali - port jako pelna
+    // podmiana metody (Prefix + skip original), bo IsLanded jest public static wiec mozna ja wolac
+    // bezposrednio, a naprawa propaguje sie automatycznie do wszystkich wewnetrznych wywolan w tej klasie.
+    [HarmonyPatch]
+    internal static class DiplomacyVassalFixPatch
+    {
+        [HarmonyPrefix]
+        [HarmonyPatch(typeof(BLTClanDiplomacyBehavior), "IsLanded")]
+        private static bool IsLandedPrefix(Clan c, ref bool __result)
+        {
+            try
+            {
+                if (c == null) { __result = false; return false; }
+                if (c.Fiefs != null && c.Fiefs.Count > 0) { __result = true; return false; }
+
+                var vassals = VassalBehavior.Current?.GetVassalClans(c);
+                if (vassals != null)
+                {
+                    foreach (var v in vassals)
+                    {
+                        if (v?.Fiefs != null && v.Fiefs.Count > 0) { __result = true; return false; }
+                    }
+                }
+                __result = false;
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("DiplomacyVassalFixPatch.IsLandedPrefix failed", ex);
+                return true; // fall back to original on error
+            }
+        }
+    }
+
     // Patch aplikowany RĘCZNIE w BLTAurasModule.OnSubModuleLoad (NIE przez [HarmonyPatch]/PatchAll —
     // 9 modułów MBGA = 9× PatchAll = duplikaty patchy). Mnoży obrażenia szarży konnej gdy adrenalina aktywna.
     internal static class AdrenalineChargePatch
