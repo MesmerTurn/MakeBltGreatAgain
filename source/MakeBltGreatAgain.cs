@@ -982,6 +982,235 @@ public class BLTGuardModule : MBSubModuleBase
         }
     }
 
+    // Samodzielny system Prestige - fork ma cala te funkcje (!prestige, BLTAdoptAHeroCampaignBehavior
+    // .GetPrestigeLevel/DoPrestige/itd, 3 patche staty) jako wlasny dodatek, ktorego NIE MA w ogole w
+    // oryginalnym DLL Randomchair22 - metody te po prostu nie istnieja tam, wiec nie mozna ich wolac ani
+    // patchowac. Wlasna, niezalezna reimplementacja: wlasne przechowywanie poziomu prestizu (JSON, jak
+    // WandererRecord), wlasne liczenie killi, wlasna komenda "!mbgaprestige", wlasne bonusy staty (HP/
+    // obrazenia/pancerz) naklejone na te same natywne metody co fork patchuje. Nie resetuje sprzetu do T1
+    // przy prestizu (EquipHero.UpgradeEquipment jest internal w BLTAdoptAHero - niedostepne z zewnatrz).
+    public class MBGAPrestigeRecord
+    {
+        public int Level { get; set; } = 0;
+        public int KillsSincePrestige { get; set; } = 0;
+    }
+
+    public class BLTMBGAPrestigeBehavior : CampaignBehaviorBase
+    {
+        public static BLTMBGAPrestigeBehavior Current => Campaign.Current?.GetCampaignBehavior<BLTMBGAPrestigeBehavior>();
+
+        private Dictionary<string, MBGAPrestigeRecord> records = new Dictionary<string, MBGAPrestigeRecord>();
+
+        public override void RegisterEvents() { }
+
+        public override void SyncData(IDataStore dataStore)
+        {
+            string json = dataStore.IsSaving
+                ? Newtonsoft.Json.JsonConvert.SerializeObject(records ?? new Dictionary<string, MBGAPrestigeRecord>())
+                : null;
+            dataStore.SyncData("MBGAPrestigeJson", ref json);
+            if (!dataStore.IsSaving)
+            {
+                records = string.IsNullOrEmpty(json)
+                    ? new Dictionary<string, MBGAPrestigeRecord>()
+                    : (Newtonsoft.Json.JsonConvert.DeserializeObject<Dictionary<string, MBGAPrestigeRecord>>(json)
+                       ?? new Dictionary<string, MBGAPrestigeRecord>());
+            }
+            if (records == null) records = new Dictionary<string, MBGAPrestigeRecord>();
+        }
+
+        public MBGAPrestigeRecord GetOrCreate(Hero hero)
+        {
+            if (hero == null) return new MBGAPrestigeRecord();
+            if (!records.TryGetValue(hero.StringId, out var rec))
+            {
+                rec = new MBGAPrestigeRecord();
+                records[hero.StringId] = rec;
+            }
+            return rec;
+        }
+
+        public static int GetLevel(Hero hero)
+            => hero != null && Current != null && Current.records.TryGetValue(hero.StringId, out var r) ? r.Level : 0;
+
+        public void AddKill(Hero hero)
+        {
+            if (hero == null) return;
+            GetOrCreate(hero).KillsSincePrestige++;
+        }
+    }
+
+    public class MBGAPrestigeConfig
+    {
+        private const string ID = "MBGA - Prestige";
+        internal static void Register() => ActionManager.RegisterGlobalConfigType(ID, typeof(MBGAPrestigeConfig));
+        internal static MBGAPrestigeConfig Get() => ActionManager.GetGlobalConfig<MBGAPrestigeConfig>(ID);
+
+        [DisplayName("Enabled"), Description("Standalone re-implementation of the fork's Prestige system for an UNMODIFIED BLTAdoptAHero.dll. Off by default - leave disabled if running the MesmerTurn fork, which already has its own !prestige command."), UsedImplicitly]
+        public bool Enabled { get; set; } = false;
+
+        [DisplayName("Min Equipment Tier Required"), Description("Hero must be at least this equipment tier (1-8) to prestige."), UsedImplicitly]
+        public int MinTierRequired { get; set; } = 7;
+
+        [DisplayName("Required Kills"), Description("Kills needed since the last prestige (or since hire) before prestiging again. 0 = no kill requirement."), UsedImplicitly]
+        public int RequireKills { get; set; } = 200;
+
+        [DisplayName("Max Prestige Level"), Description("Maximum prestige level obtainable."), UsedImplicitly]
+        public int MaxPrestigeLevel { get; set; } = 5;
+
+        [DisplayName("Gold Per Kill Bonus % Per Level"), Description("Extra gold-per-kill percent bonus, per prestige level (informational only in this standalone version - not wired into a gold-per-kill reward)."), UsedImplicitly]
+        public int GoldPerKillBonusPercentPerLevel { get; set; } = 15;
+
+        [DisplayName("Damage Bonus % Per Level"), Description("Extra outgoing damage percent, per prestige level, cumulative."), UsedImplicitly]
+        public int DamageBonusPercentPerLevel { get; set; } = 5;
+
+        [DisplayName("Armor Bonus Per Level"), Description("Extra flat armor effectiveness, per prestige level, cumulative."), UsedImplicitly]
+        public int ArmorBonusPerLevel { get; set; } = 2;
+
+        [DisplayName("HP Bonus Per Level"), Description("Extra flat max HP, per prestige level, cumulative."), UsedImplicitly]
+        public int HPBonusPerLevel { get; set; } = 20;
+
+        [DisplayName("Chat Title Symbol"), Description("Symbol repeated per prestige level and shown before the hero's name (e.g. 3 stars at P3)."), UsedImplicitly]
+        public string ChatTitleSymbol { get; set; } = "★"; // ★
+
+        internal string GetChatTitle(int level) => level <= 0 ? "" : string.Concat(Enumerable.Repeat(ChatTitleSymbol, level));
+    }
+
+    public class MBGAPrestigeCommand : ICommandHandler
+    {
+        public class Settings { }
+        public Type HandlerConfigType => typeof(Settings);
+
+        public void Execute(ReplyContext context, object config)
+        {
+            var cfg = MBGAPrestigeConfig.Get();
+            if (cfg == null || !cfg.Enabled) { ActionManager.SendReply(context, "MBGA Prestige is disabled."); return; }
+
+            var hero = BLTAdoptAHeroCampaignBehavior.Current?.GetAdoptedHero(context.UserName);
+            if (hero == null) { ActionManager.SendReply(context, "You don't have an adopted hero."); return; }
+
+            var behavior = BLTMBGAPrestigeBehavior.Current;
+            if (behavior == null) { ActionManager.SendReply(context, "Prestige system not ready."); return; }
+
+            var rec = behavior.GetOrCreate(hero);
+            string title = cfg.GetChatTitle(rec.Level);
+            string titlePrefix = string.IsNullOrEmpty(title) ? "" : $"{title} ";
+
+            if (rec.Level >= cfg.MaxPrestigeLevel)
+            {
+                ActionManager.SendReply(context, $"{titlePrefix}P{rec.Level} MAX prestige reached.");
+                return;
+            }
+
+            int currentTier = (BLTAdoptAHeroCampaignBehavior.Current?.GetEquipmentTier(hero) ?? -1) + 1; // 1-based
+            bool tierOk = currentTier >= cfg.MinTierRequired;
+            bool killsOk = cfg.RequireKills <= 0 || rec.KillsSincePrestige >= cfg.RequireKills;
+            int nextLevel = rec.Level + 1;
+
+            if (!tierOk)
+            {
+                ActionManager.SendReply(context, $"{titlePrefix}P{rec.Level} -> P{nextLevel} | Need T{cfg.MinTierRequired} (current T{currentTier}).");
+                return;
+            }
+            if (!killsOk)
+            {
+                ActionManager.SendReply(context, $"{titlePrefix}P{rec.Level} -> P{nextLevel} | Need {cfg.RequireKills - rec.KillsSincePrestige} more kills ({rec.KillsSincePrestige}/{cfg.RequireKills}).");
+                return;
+            }
+            if (Mission.Current != null)
+            {
+                ActionManager.SendReply(context, "Cannot prestige during an active battle!");
+                return;
+            }
+
+            rec.Level = nextLevel;
+            rec.KillsSincePrestige = 0;
+            string newTitle = cfg.GetChatTitle(rec.Level);
+            ActionManager.SendReply(context, $"{newTitle} {context.UserName} prestiged to P{rec.Level}! +{cfg.DamageBonusPercentPerLevel * rec.Level}% damage, +{cfg.ArmorBonusPerLevel * rec.Level} armor, +{cfg.HPBonusPerLevel * rec.Level} HP.");
+        }
+    }
+
+    internal class MBGAPrestigeKillTrackerBehavior : MissionBehavior
+    {
+        public override MissionBehaviorType BehaviorType => MissionBehaviorType.Other;
+
+        public override void OnAgentRemoved(Agent affectedAgent, Agent affectorAgent, AgentState agentState, KillingBlow blow)
+        {
+            try
+            {
+                var cfg = MBGAPrestigeConfig.Get();
+                if (cfg == null || !cfg.Enabled) return;
+                if (agentState != AgentState.Killed && agentState != AgentState.Unconscious) return;
+                if (affectorAgent == null || affectedAgent == null || affectorAgent == affectedAgent) return;
+                if (affectorAgent.Team != null && affectedAgent.Team != null && affectorAgent.Team.IsFriendOf(affectedAgent.Team)) return;
+
+                var killerHero = affectorAgent.GetAdoptedHero();
+                if (killerHero == null) return;
+
+                BLTMBGAPrestigeBehavior.Current?.AddKill(killerHero);
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("MBGAPrestigeKillTrackerBehavior.OnAgentRemoved failed", ex);
+            }
+        }
+    }
+
+    [HarmonyPatch]
+    internal static class MBGAPrestigeStatPatches
+    {
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(Agent), "BaseHealthLimit", MethodType.Getter)]
+        private static void HealthPostfix(Agent __instance, ref float __result)
+        {
+            try
+            {
+                var cfg = MBGAPrestigeConfig.Get();
+                if (cfg == null || !cfg.Enabled) return;
+                var hero = (__instance?.Character as CharacterObject)?.HeroObject;
+                if (hero == null) return;
+                int level = BLTMBGAPrestigeBehavior.GetLevel(hero);
+                if (level > 0) __result += cfg.HPBonusPerLevel * level;
+            }
+            catch (Exception ex) { Log.Exception("MBGAPrestigeStatPatches.HealthPostfix failed", ex); }
+        }
+
+        [HarmonyPrefix]
+        [HarmonyPatch(typeof(Mission), "RegisterBlow")]
+        private static void DamagePrefix(Agent attacker, ref Blow b)
+        {
+            try
+            {
+                var cfg = MBGAPrestigeConfig.Get();
+                if (cfg == null || !cfg.Enabled || attacker == null) return;
+                var hero = attacker.GetAdoptedHero();
+                if (hero == null) return;
+                int level = BLTMBGAPrestigeBehavior.GetLevel(hero);
+                if (level <= 0) return;
+                float mult = 1f + (cfg.DamageBonusPercentPerLevel * level) / 100f;
+                b.BaseMagnitude *= mult;
+                b.InflictedDamage = (int)(b.InflictedDamage * mult);
+            }
+            catch (Exception ex) { Log.Exception("MBGAPrestigeStatPatches.DamagePrefix failed", ex); }
+        }
+
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(Agent), "GetBaseArmorEffectivenessForBodyPart")]
+        private static void ArmorPostfix(Agent __instance, ref float __result)
+        {
+            try
+            {
+                var cfg = MBGAPrestigeConfig.Get();
+                if (cfg == null || !cfg.Enabled) return;
+                var hero = (__instance?.Character as CharacterObject)?.HeroObject;
+                if (hero == null) return;
+                int level = BLTMBGAPrestigeBehavior.GetLevel(hero);
+                if (level > 0) __result += cfg.ArmorBonusPerLevel * level;
+            }
+            catch (Exception ex) { Log.Exception("MBGAPrestigeStatPatches.ArmorPostfix failed", ex); }
+        }
+    }
+
     // Patch aplikowany RĘCZNIE w BLTAurasModule.OnSubModuleLoad (NIE przez [HarmonyPatch]/PatchAll —
     // 9 modułów MBGA = 9× PatchAll = duplikaty patchy). Mnoży obrażenia szarży konnej gdy adrenalina aktywna.
     internal static class AdrenalineChargePatch
@@ -2224,6 +2453,7 @@ public class BLTAurasModule : MBSubModuleBase
             try { HeroBarGlobalConfig.Register(); } catch (Exception ex) { Log.Exception("[HeroBar] Register failed", ex); }
             try { MBGATournamentLoadoutConfig.Register(); } catch (Exception ex) { Log.Exception("[TournamentLoadout] Register failed", ex); }
             try { MBGARetinueRefundConfig.Register(); } catch (Exception ex) { Log.Exception("[RetinueRefund] Register failed", ex); }
+            try { MBGAPrestigeConfig.Register(); } catch (Exception ex) { Log.Exception("[Prestige] Register failed", ex); }
         }
 
         protected override void OnSubModuleLoad()
@@ -2322,6 +2552,7 @@ public class BLTAurasModule : MBSubModuleBase
             {
                 campaignStarter.AddBehavior(new BLTBannerSanitizerBehavior());
                 campaignStarter.AddBehavior(new BLTWandererBehavior());
+                campaignStarter.AddBehavior(new BLTMBGAPrestigeBehavior());
             }
         }
 
@@ -2330,6 +2561,7 @@ public class BLTAurasModule : MBSubModuleBase
             base.OnMissionBehaviorInitialize(mission);
             mission.AddMissionBehavior(new WandererSpawnMissionBehavior());
             mission.AddMissionBehavior(new AdrenalineMissionBehavior());
+            mission.AddMissionBehavior(new MBGAPrestigeKillTrackerBehavior());
         }
 
     }
