@@ -18,12 +18,6 @@
 	</DependedModules>
 	<SubModules>
 		<SubModule>
-			<Name value="MakeBltGreatAgain"/>
-			<DLLName value="MakeBltGreatAgain.dll"/>
-			<SubModuleClassType value="MakeBltGreatAgain.BLTResurrectModule"/>
-			<Tags/>
-		</SubModule>
-		<SubModule>
 			<Name value="MakeBltGreatAgain_Formation"/>
 			<DLLName value="MakeBltGreatAgain.dll"/>
 			<SubModuleClassType value="MakeBltGreatAgain.BLTFormationModule"/>
@@ -33,12 +27,6 @@
 			<Name value="MakeBltGreatAgain_Guard"/>
 			<DLLName value="MakeBltGreatAgain.dll"/>
 			<SubModuleClassType value="MakeBltGreatAgain.BLTGuardModule"/>
-			<Tags/>
-		</SubModule>
-		<SubModule>
-			<Name value="MakeBltGreatAgain_Rally"/>
-			<DLLName value="MakeBltGreatAgain.dll"/>
-			<SubModuleClassType value="MakeBltGreatAgain.BLTRallyModule"/>
 			<Tags/>
 		</SubModule>
 		<SubModule>
