@@ -1385,6 +1385,89 @@ public class BLTGuardModule : MBSubModuleBase
         }
     }
 
+    // Samodzielny odpowiednik forkowego UseDragon/UseChariot (RoT) - fork dodaje te dwa bool-e
+    // BEZPOSREDNIO do HeroClassDef (BLTAdoptAHero), wiec nie istnieja w oryginalnym DLL i nie da
+    // sie ich stamtad odczytac na czystej instalacji. HeroClassDef samo w sobie (ID/Name) jest
+    // czescia oryginalnego BLT, wiec zamiast rozszerzac ten typ, MBGA trzyma WLASNA, rownolegla
+    // liste "ta klasa jezdzi na X" kluczowana po nazwie klasy, i podmienia wierzchowca po kazdej
+    // zmianie tieru sprzetu (Postfix na SetEquipmentTier - publiczna, identyczna w forku i
+    // oryginale, wolana przez !upgrade, Prestige i TierUp jednakowo). Itemy dragon_black/chariot1
+    // itd. to zwykle stringowe ID przedmiotow z modulu RoT - odczytywane przez natywny
+    // MBObjectManager, wiec nie ma tu zadnej zaleznosci od BLTAdoptAHero w ogole.
+    public class MBGAClassMountDef
+    {
+        [DisplayName("Class Name"), Description("Exact display name of the hero class this override applies to (as set in the class's own config)."), UsedImplicitly]
+        public string ClassName { get; set; } = "";
+
+        [DisplayName("Mount"), Description("Dragon or Chariot - requires the RoT (Rise of Templin) content module to be installed for the item IDs to resolve."), ItemsSource(typeof(MountTypeItemsSource)), UsedImplicitly]
+        public string Mount { get; set; } = "Dragon";
+    }
+
+    public class MountTypeItemsSource : IItemsSource
+    {
+        public ItemCollection GetValues()
+        {
+            var c = new ItemCollection { "Dragon", "Chariot" };
+            return c;
+        }
+    }
+
+    public class MBGADragonChariotConfig
+    {
+        private const string ID = "MBGA - Dragon-Chariot Mounts (RoT)";
+        internal static void Register() => ActionManager.RegisterGlobalConfigType(ID, typeof(MBGADragonChariotConfig));
+        internal static MBGADragonChariotConfig Get() => ActionManager.GetGlobalConfig<MBGADragonChariotConfig>(ID);
+
+        [DisplayName("Enabled"), Description("Lets specific hero classes ride a Dragon or Chariot (RoT module content) instead of a normal horse. Standalone MBGA re-implementation of the fork's UseDragon/UseChariot class flags. Off by default - leave disabled if running the MesmerTurn fork, which already has this."), UsedImplicitly]
+        public bool Enabled { get; set; } = false;
+
+        [DisplayName("Class Overrides"), Description("Which hero classes (by exact name) ride a Dragon or Chariot."), UsedImplicitly]
+        public List<MBGAClassMountDef> Overrides { get; set; } = new List<MBGAClassMountDef>();
+    }
+
+    [HarmonyPatch]
+    internal static class MBGADragonChariotPatch
+    {
+        private static readonly string[] DragonGroundIds = { "dragon_black", "dragon_brown", "dragon_gold" };
+        private static readonly string[] DragonFlyingIds = { "dragon_black2", "dragon_brown2", "dragon_gold2" };
+        private static readonly string[] ChariotBasicIds = { "chariot1", "chariot2", "chariot3" };
+        private static readonly string[] ChariotAdvancedIds = { "chariot4", "chariot5", "chariot6" };
+
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(BLTAdoptAHeroCampaignBehavior), "SetEquipmentTier")]
+        private static void Postfix(BLTAdoptAHeroCampaignBehavior __instance, Hero hero, int tier)
+        {
+            try
+            {
+                var cfg = MBGADragonChariotConfig.Get();
+                if (cfg == null || !cfg.Enabled || hero == null || cfg.Overrides.Count == 0) return;
+
+                var classDef = __instance.GetClass(hero);
+                string className = classDef?.Name?.ToString();
+                if (string.IsNullOrEmpty(className)) return;
+
+                var over = cfg.Overrides.FirstOrDefault(o => string.Equals(o.ClassName, className, StringComparison.OrdinalIgnoreCase));
+                if (over == null) return;
+
+                int idx = Math.Max(0, Math.Min(2, tier));
+                string itemId = over.Mount == "Chariot"
+                    ? (tier < 3 ? ChariotBasicIds[idx] : ChariotAdvancedIds[idx])
+                    : (tier < 3 ? DragonGroundIds[idx] : DragonFlyingIds[idx]);
+
+                var item = TaleWorlds.ObjectSystem.MBObjectManager.Instance.GetObject<ItemObject>(itemId);
+                if (item == null)
+                {
+                    Log.Info($"[MBGADragonChariot] Item '{itemId}' not found - is the RoT content module installed?");
+                    return;
+                }
+
+                hero.BattleEquipment[EquipmentIndex.Horse] = new EquipmentElement(item);
+                hero.BattleEquipment[EquipmentIndex.HorseHarness] = EquipmentElement.Invalid;
+            }
+            catch (Exception ex) { Log.Exception("MBGADragonChariotPatch.Postfix failed", ex); }
+        }
+    }
+
     // Patch aplikowany RĘCZNIE w BLTAurasModule.OnSubModuleLoad (NIE przez [HarmonyPatch]/PatchAll —
     // 9 modułów MBGA = 9× PatchAll = duplikaty patchy). Mnoży obrażenia szarży konnej gdy adrenalina aktywna.
     internal static class AdrenalineChargePatch
@@ -2634,6 +2717,7 @@ public class BLTAurasModule : MBSubModuleBase
             try { MBGAPrestigeConfig.Register(); } catch (Exception ex) { Log.Exception("[Prestige] Register failed", ex); }
             try { MBGADiscardRefundConfig.Register(); } catch (Exception ex) { Log.Exception("[DiscardRefund] Register failed", ex); }
             try { MBGATier78Config.Register(); } catch (Exception ex) { Log.Exception("[Tier78] Register failed", ex); }
+            try { MBGADragonChariotConfig.Register(); } catch (Exception ex) { Log.Exception("[DragonChariot] Register failed", ex); }
         }
 
         protected override void OnSubModuleLoad()
