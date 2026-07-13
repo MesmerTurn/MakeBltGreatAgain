@@ -48,12 +48,6 @@
 			<Tags/>
 		</SubModule>
 		<SubModule>
-			<Name value="MakeBltGreatAgain_Grail"/>
-			<DLLName value="MakeBltGreatAgain.dll"/>
-			<SubModuleClassType value="MakeBltGreatAgain.BLTGrailModule"/>
-			<Tags/>
-		</SubModule>
-		<SubModule>
 			<Name value="MakeBltGreatAgain_Auras"/>
 			<DLLName value="MakeBltGreatAgain.dll"/>
 			<SubModuleClassType value="MakeBltGreatAgain.BLTAurasModule"/>
