@@ -1173,7 +1173,8 @@ public class BLTGuardModule : MBSubModuleBase
             {
                 var cfg = MBGAPrestigeConfig.Get();
                 if (cfg == null || !cfg.Enabled) return;
-                var hero = (__instance?.Character as CharacterObject)?.HeroObject;
+                if (__instance == null || !__instance.IsActive()) return;
+                var hero = (__instance.Character as CharacterObject)?.HeroObject;
                 if (hero == null) return;
                 int level = BLTMBGAPrestigeBehavior.GetLevel(hero);
                 if (level > 0) __result += cfg.HPBonusPerLevel * level;
@@ -1188,7 +1189,7 @@ public class BLTGuardModule : MBSubModuleBase
             try
             {
                 var cfg = MBGAPrestigeConfig.Get();
-                if (cfg == null || !cfg.Enabled || attacker == null) return;
+                if (cfg == null || !cfg.Enabled || attacker == null || !attacker.IsActive()) return;
                 var hero = attacker.GetAdoptedHero();
                 if (hero == null) return;
                 int level = BLTMBGAPrestigeBehavior.GetLevel(hero);
@@ -1208,7 +1209,8 @@ public class BLTGuardModule : MBSubModuleBase
             {
                 var cfg = MBGAPrestigeConfig.Get();
                 if (cfg == null || !cfg.Enabled) return;
-                var hero = (__instance?.Character as CharacterObject)?.HeroObject;
+                if (__instance == null || !__instance.IsActive()) return;
+                var hero = (__instance.Character as CharacterObject)?.HeroObject;
                 if (hero == null) return;
                 int level = BLTMBGAPrestigeBehavior.GetLevel(hero);
                 if (level > 0) __result += cfg.ArmorBonusPerLevel * level;
@@ -1321,7 +1323,8 @@ public class BLTGuardModule : MBSubModuleBase
             {
                 var cfg = MBGATier78Config.Get();
                 if (cfg == null || !cfg.Enabled) return;
-                var hero = (__instance?.Character as CharacterObject)?.HeroObject;
+                if (__instance == null || !__instance.IsActive()) return;
+                var hero = (__instance.Character as CharacterObject)?.HeroObject;
                 if (hero == null) return;
                 if ((BLTAdoptAHeroCampaignBehavior.Current?.GetEquipmentTier(hero) ?? -1) >= 7)
                     __result *= cfg.Tier8HealthMultiplier;
@@ -1336,7 +1339,7 @@ public class BLTGuardModule : MBSubModuleBase
             try
             {
                 var cfg = MBGATier78Config.Get();
-                if (cfg == null || !cfg.Enabled || attacker == null) return;
+                if (cfg == null || !cfg.Enabled || attacker == null || !attacker.IsActive()) return;
                 var hero = attacker.GetAdoptedHero();
                 if (hero == null) return;
                 if ((BLTAdoptAHeroCampaignBehavior.Current?.GetEquipmentTier(hero) ?? -1) >= 6)
@@ -1357,7 +1360,8 @@ public class BLTGuardModule : MBSubModuleBase
             {
                 var cfg = MBGATier78Config.Get();
                 if (cfg == null || !cfg.Enabled) return;
-                var hero = (__instance?.Character as CharacterObject)?.HeroObject;
+                if (__instance == null || !__instance.IsActive()) return;
+                var hero = (__instance.Character as CharacterObject)?.HeroObject;
                 if (hero == null) return;
                 if ((BLTAdoptAHeroCampaignBehavior.Current?.GetEquipmentTier(hero) ?? -1) >= 6)
                     __result *= cfg.Tier7ArmorMultiplier;
