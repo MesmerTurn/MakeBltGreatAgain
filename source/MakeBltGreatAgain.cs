@@ -1854,8 +1854,6 @@ public class BLTAurasModule : MBSubModuleBase
             ActionManager.RegisterAll(typeof(BLTAurasModule).Assembly);
             // Rejestracja w konstruktorze — niezależna od PatchAll, na pewno wykona się przed ładowaniem ustawień
             try { PowerProgressionGlobalConfig.Register(); } catch (Exception ex) { Log.Exception("[PowerProg] Register failed", ex); }
-            try { AdoptCultureRestrictionGlobalConfig.Register(); } catch (Exception ex) { Log.Exception("[CultureRestrict] Register failed", ex); }
-            try { EquipCultureGlobalConfig.Register(); } catch (Exception ex) { Log.Exception("[EquipCulture] Register failed", ex); }
             try { AdrenalineGlobalConfig.Register(); } catch (Exception ex) { Log.Exception("[Adrenaline] Register failed", ex); }
             try { MBGATier78Config.Register(); } catch (Exception ex) { Log.Exception("[Tier78] Register failed", ex); }
             try { MBGADragonChariotConfig.Register(); } catch (Exception ex) { Log.Exception("[DragonChariot] Register failed", ex); }
@@ -1880,26 +1878,6 @@ public class BLTAurasModule : MBSubModuleBase
                     harmony.Patch(target, prefix: new HarmonyMethod(prefix));
                 else
                     Log.Info($"[PowerProg] Patch target/prefix not found (target={target != null}, prefix={prefix != null})");
-
-                // Culture restriction — ręcznie raz (nie [HarmonyPatch]/PatchAll, bo 9 modułów = 9×)
-                var cultTarget = AdoptCultureRestrictionPatch.TargetMethod();
-                var cultPrefix = typeof(AdoptCultureRestrictionPatch).GetMethod(
-                    nameof(AdoptCultureRestrictionPatch.Prefix),
-                    BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
-                if (cultTarget != null && cultPrefix != null)
-                    harmony.Patch(cultTarget, prefix: new HarmonyMethod(cultPrefix));
-                else
-                    Log.Info($"[CultureRestrict] Patch target/prefix not found (target={cultTarget != null}, prefix={cultPrefix != null})");
-
-                // Equip from hero culture — ręcznie raz
-                var equipTarget = EquipCultureRestrictionPatch.TargetMethod();
-                var equipPrefix = typeof(EquipCultureRestrictionPatch).GetMethod(
-                    nameof(EquipCultureRestrictionPatch.Prefix),
-                    BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
-                if (equipTarget != null && equipPrefix != null)
-                    harmony.Patch(equipTarget, prefix: new HarmonyMethod(equipPrefix));
-                else
-                    Log.Info($"[EquipCulture] Patch target/prefix not found (target={equipTarget != null}, prefix={equipPrefix != null})");
 
                 // Human children — ręcznie raz (nie [HarmonyPatch]/PatchAll)
                 var childTarget = HumanChildPatch.TargetMethod();
@@ -6056,45 +6034,6 @@ public class BLTAurasModule : MBSubModuleBase
     }
 
     // ════════════════════════════════════════════════════════════════════
-    //  ADOPT CULTURE RESTRICTION — config
-    // ════════════════════════════════════════════════════════════════════
-
-    [DisplayName("MBGA - Culture Restriction")]
-    public class AdoptCultureRestrictionGlobalConfig
-    {
-        private const string ID = "MBGA - Culture Restriction";
-        internal static void Register() => ActionManager.RegisterGlobalConfigType(ID, typeof(AdoptCultureRestrictionGlobalConfig));
-        internal static AdoptCultureRestrictionGlobalConfig Get() => ActionManager.GetGlobalConfig<AdoptCultureRestrictionGlobalConfig>(ID);
-
-        [DisplayName("Enabled"),
-         Description("Restrict which cultures can be adopted via the adopt-by-culture command. When off, all cultures are available (default BLT behavior)."),
-         UsedImplicitly]
-        public bool Enabled { get; set; } = false;
-
-        [DisplayName("Allowed Cultures"),
-         Description("List of culture names or string ids that viewers are allowed to adopt (e.g. Empire, Vlandia). Case-insensitive."),
-         UsedImplicitly]
-        public List<string> AllowedCultures { get; set; } = new List<string>();
-
-        public bool IsAllowed(CultureObject culture)
-        {
-            if (culture == null || AllowedCultures == null) return false;
-            string name = culture.Name?.ToString()?.Trim();
-            string sid  = culture.StringId?.Trim();
-            return AllowedCultures.Any(a =>
-            {
-                var t = a?.Trim();
-                return !string.IsNullOrEmpty(t) &&
-                    (string.Equals(t, name, StringComparison.OrdinalIgnoreCase)
-                     || string.Equals(t, sid, StringComparison.OrdinalIgnoreCase));
-            });
-        }
-
-        public string AllowedDisplay()
-            => string.Join(", ", CampaignHelpers.MainCultures.Where(IsAllowed).Select(c => c.Name.ToString()));
-    }
-
-    // ════════════════════════════════════════════════════════════════════
     //  BANNER SANITIZER — fix Warsails banner crash (no-Warsails setups)
     // ════════════════════════════════════════════════════════════════════
 
@@ -6170,64 +6109,6 @@ public class BLTAurasModule : MBSubModuleBase
     }
 
     // ════════════════════════════════════════════════════════════════════
-    //  ADOPT CULTURE RESTRICTION — Harmony prefix (aplikowany ręcznie raz)
-    // ════════════════════════════════════════════════════════════════════
-
-    internal static class AdoptCultureRestrictionPatch
-    {
-        internal static System.Reflection.MethodBase TargetMethod()
-        {
-            var type = typeof(BLTAdoptAHeroCampaignBehavior).Assembly.GetTypes()
-                .FirstOrDefault(t => t.Name == "AdoptAHero");
-            return type?.GetMethod("ExecuteInternal",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-        }
-
-        internal static bool Prefix(object settings, string contextArgs, ref ValueTuple<bool, string> __result)
-        {
-            try
-            {
-                var cfg = AdoptCultureRestrictionGlobalConfig.Get();
-                if (cfg == null || !cfg.Enabled || cfg.AllowedCultures == null || cfg.AllowedCultures.Count == 0)
-                    return true;
-
-                var vsProp = settings?.GetType().GetProperty("ViewerSelects");
-                var vsVal = vsProp?.GetValue(settings);
-                if (vsVal == null || vsVal.ToString() != "Culture")
-                    return true;
-
-                string allowedDisplay = cfg.AllowedDisplay();
-                string arg = (contextArgs ?? "").Trim();
-
-                if (arg.Length <= 1 || string.Equals(arg, "list", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(arg, "a", StringComparison.OrdinalIgnoreCase))
-                {
-                    __result = (false, $"Available cultures: {allowedDisplay}");
-                    return false;
-                }
-
-                var match = CampaignHelpers.MainCultures
-                    .Where(cfg.IsAllowed)
-                    .FirstOrDefault(c => c.Name.ToString().StartsWith(arg, StringComparison.CurrentCultureIgnoreCase));
-                if (match != null)
-                    return true;
-
-                var exists = CampaignHelpers.MainCultures
-                    .FirstOrDefault(c => c.Name.ToString().StartsWith(arg, StringComparison.CurrentCultureIgnoreCase));
-                __result = exists != null
-                    ? (false, $"Culture '{exists.Name}' is not allowed. Available cultures: {allowedDisplay}")
-                    : (false, $"No culture starting with '{arg}' found. Available cultures: {allowedDisplay}");
-                return false;
-            }
-            catch (Exception e)
-            {
-                Log.Exception("[CultureRestrict] Prefix", e);
-                return true;
-            }
-        }
-    }
-
-    // ════════════════════════════════════════════════════════════════════
     //  HUMAN CHILDREN — anti-crash dla nie-ludzkich ras (The Old Realm)
     //  Każde nowonarodzone dziecko wymuszane na rasę ludzką (model dziecka).
     // ════════════════════════════════════════════════════════════════════
@@ -6249,24 +6130,6 @@ public class BLTAurasModule : MBSubModuleBase
             }
             catch (Exception e) { Log.Exception("[HumanChild] Postfix", e); }
         }
-    }
-
-    // ════════════════════════════════════════════════════════════════════
-    //  EQUIP FROM HERO CULTURE (TOR) — config + Harmony prefix
-    //  Bohater dostaje sprzet TYLKO z wlasnej kultury (nigdy obcej).
-    // ════════════════════════════════════════════════════════════════════
-
-    [DisplayName("MBGA - Equip From Culture")]
-    public class EquipCultureGlobalConfig
-    {
-        private const string ID = "MBGA - Equip From Culture";
-        internal static void Register() => ActionManager.RegisterGlobalConfigType(ID, typeof(EquipCultureGlobalConfig));
-        internal static EquipCultureGlobalConfig Get() => ActionManager.GetGlobalConfig<EquipCultureGlobalConfig>(ID);
-
-        [DisplayName("Enabled"),
-         Description("Adopted heroes only get equipment from their own culture (for total-conversion mods like The Old Realms where every item is culture-tagged). If the culture has no item for a slot, the nearest tier of the SAME culture is used, or the slot stays empty. Leave OFF for vanilla (most vanilla items have no culture and heroes would end up unarmed)."),
-         UsedImplicitly]
-        public bool Enabled { get; set; } = false;
     }
 
     // ════════════════════════════════════════════════════════════════════════════
@@ -6737,32 +6600,6 @@ public class BLTAurasModule : MBSubModuleBase
         public float MountedChargeDamageMultiplier { get; set; } = 3f;
     }
 
-    internal static class EquipCultureRestrictionPatch
-    {
-        internal static System.Reflection.MethodBase TargetMethod()
-        {
-            var type = typeof(BLTAdoptAHeroCampaignBehavior).Assembly.GetTypes()
-                .FirstOrDefault(t => t.Name == "EquipHero");
-            return type?.GetMethod("FindRandomTieredEquipment",
-                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-        }
-
-        // Prefix na EquipHero.FindRandomTieredEquipment — wymusza kulture bohatera przez parametry.
-        // (EquipHero jest internal, wiec nie siegamy do jego helperow — tylko podmieniamy parametry,
-        //  reszte robi oryginalna metoda: filtr item.Culture==kultura + wybor tieru w tej kulturze.)
-        internal static void Prefix(Hero hero, ref CultureObject cultureFilter, ref bool cultureFilterSpecified)
-        {
-            try
-            {
-                var cfg = EquipCultureGlobalConfig.Get();
-                if (cfg == null || !cfg.Enabled) return;             // standard BLT
-                if (hero?.Culture == null) return;                   // brak kultury → standard
-                cultureFilter = hero.Culture;                        // wymus kulture bohatera
-                cultureFilterSpecified = true;                       // ... i nigdy nie odpuszczaj (brak obcej kultury)
-            }
-            catch (Exception e) { Log.Exception("[EquipCulture] Prefix", e); }
-        }
-    }
 
 
 }
