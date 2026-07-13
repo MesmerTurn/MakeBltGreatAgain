@@ -1857,7 +1857,6 @@ public class BLTAurasModule : MBSubModuleBase
             try { AdoptCultureRestrictionGlobalConfig.Register(); } catch (Exception ex) { Log.Exception("[CultureRestrict] Register failed", ex); }
             try { EquipCultureGlobalConfig.Register(); } catch (Exception ex) { Log.Exception("[EquipCulture] Register failed", ex); }
             try { AdrenalineGlobalConfig.Register(); } catch (Exception ex) { Log.Exception("[Adrenaline] Register failed", ex); }
-            try { HeroBarGlobalConfig.Register(); } catch (Exception ex) { Log.Exception("[HeroBar] Register failed", ex); }
             try { MBGATier78Config.Register(); } catch (Exception ex) { Log.Exception("[Tier78] Register failed", ex); }
             try { MBGADragonChariotConfig.Register(); } catch (Exception ex) { Log.Exception("[DragonChariot] Register failed", ex); }
         }
@@ -6736,29 +6735,6 @@ public class BLTAurasModule : MBSubModuleBase
 
         [DisplayName("Mounted Charge Damage Multiplier"), Description("Charge damage multiplier while mounted and active (3.0 = +300%)"), UsedImplicitly]
         public float MountedChargeDamageMultiplier { get; set; } = 3f;
-    }
-
-    [DisplayName("MBGA - Hero Bar")]
-    public class HeroBarGlobalConfig
-    {
-        private const string ID = "MBGA - Hero Bar";
-        internal static void Register() => ActionManager.RegisterGlobalConfigType(ID, typeof(HeroBarGlobalConfig));
-        internal static HeroBarGlobalConfig Get() => ActionManager.GetGlobalConfig<HeroBarGlobalConfig>(ID);
-
-        [DisplayName("1. Overlay On/Off (OBS Browser Source)"),
-         Description("MASTER SWITCH for the browser-based hero overlay you add as an OBS Browser Source. Turn OFF to hide it completely, no matter what the settings below say. Does NOT affect the in-game nameplate above heroes' heads - that one always shows if the mod is running."),
-         PropertyOrder(1), UsedImplicitly]
-        public bool ShowMissionOverlay { get; set; } = true;
-
-        [DisplayName("2. Bar Style: New vs Old 5.2.4"),
-         Description("CHECKED = new redesigned bar (class level dots, extra stats, colored adrenaline/power bars). UNCHECKED = the original simple BLT 5.2.4 look (in-game: just the hero's name; overlay: circular cooldown ring, plain-text Kills/Gold/XP, no level dots). Affects BOTH the in-game nameplate AND the browser overlay. Takes effect on the next mission load."),
-         PropertyOrder(2), UsedImplicitly]
-        public bool UseNewHeroBarLayout { get; set; } = true;
-
-        [DisplayName("3. In-Game Side Bars (New Style only)"),
-         Description("Only matters when setting 2 (New Style) is checked, and only affects the IN-GAME 3D nameplate above heroes' heads (not the browser overlay, which always shows its own side bars in New Style). Shows/hides the colored adrenaline (left) and power (right) bars next to the name. Takes effect on the next mission load."),
-         PropertyOrder(3), UsedImplicitly]
-        public bool ShowSideBars { get; set; } = true;
     }
 
     internal static class EquipCultureRestrictionPatch
