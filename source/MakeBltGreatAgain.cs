@@ -51,7 +51,7 @@ namespace MakeBltGreatAgain
         public static void SafeSetContourColor(Agent agent, uint? color, bool alwaysVisible)
         {
             if (agent == null || !agent.IsActive()) return;
-            try { SafeSetContourColor(agent, color, alwaysVisible); } catch { }
+            try { agent.AgentVisuals?.SetContourColor(color, alwaysVisible); } catch { }
         }
     }
 
