@@ -1165,6 +1165,15 @@ public class BLTGuardModule : MBSubModuleBase
     [HarmonyPatch]
     internal static class MBGAPrestigeStatPatches
     {
+        // Patchowanie Agent.BaseHealthLimit/GetBaseArmorEffectivenessForBodyPart (nawet z pustym
+        // cialem, gdy Enabled=false) psuje renderowanie podgladu w character creation - agent
+        // podgladowy tam nie jest w pelni "prawdziwym" agentem. Prepare() to wbudowany hook Harmony:
+        // zwrocenie false oznacza calkowite pominiecie patchowania tej klasy, wiec przy domyslnym
+        // Enabled=false (99% instalacji) te gettery w ogole nie sa dotykane. Jesli funkcja jest
+        // wlaczona, wymaga to restartu gry zeby patch sie zaaplikowal (Prepare() liczy sie raz,
+        // przy OnSubModuleLoad) - akceptowalny kompromis wobec psucia character creation domyslnie.
+        private static bool Prepare() => MBGAPrestigeConfig.Get()?.Enabled == true;
+
         [HarmonyPostfix]
         [HarmonyPatch(typeof(Agent), "BaseHealthLimit", MethodType.Getter)]
         private static void HealthPostfix(Agent __instance, ref float __result)
@@ -1315,6 +1324,12 @@ public class BLTGuardModule : MBSubModuleBase
     [HarmonyPatch]
     internal static class MBGATier78StatPatches
     {
+        // Patchowanie Agent.BaseHealthLimit/GetBaseArmorEffectivenessForBodyPart (nawet z pustym
+        // cialem, gdy Enabled=false) psuje renderowanie podgladu w character creation - patrz
+        // komentarz przy MBGAPrestigeStatPatches.Prepare(). Przy domyslnym Enabled=false te
+        // gettery w ogole nie sa patchowane.
+        private static bool Prepare() => MBGATier78Config.Get()?.Enabled == true;
+
         [HarmonyPostfix]
         [HarmonyPatch(typeof(Agent), "BaseHealthLimit", MethodType.Getter)]
         private static void HealthPostfix(Agent __instance, ref float __result)
