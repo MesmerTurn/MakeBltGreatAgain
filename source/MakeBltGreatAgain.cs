@@ -26,6 +26,8 @@ using System.Reflection;
 using System.Text.RegularExpressions;
 using System;
 using TaleWorlds.CampaignSystem.Actions;
+using TaleWorlds.CampaignSystem.CampaignBehaviors;
+using TaleWorlds.CampaignSystem.GameComponents;
 using TaleWorlds.CampaignSystem.MapEvents;
 using TaleWorlds.CampaignSystem.Party;
 using TaleWorlds.CampaignSystem.Settlements;
@@ -35,10 +37,300 @@ using TaleWorlds.Engine;
 using TaleWorlds.Library;
 using TaleWorlds.MountAndBlade;
 using Xceed.Wpf.Toolkit.PropertyGrid.Attributes;
+using Xceed.Wpf.Toolkit.PropertyGrid.Editors;
+using WpfColor = System.Windows.Media.Color;
 using static MakeBltGreatAgain.ContourHelpers;
 
 namespace MakeBltGreatAgain
 {
+
+#if BLT_1315
+    // Realm of Thrones (ROT.dll, module "ROT-Core") has multiple spots that throw uncaught
+    // NullReferenceExceptions during normal play - not our code, not fixable by editing our own
+    // patches. Each entry here wraps one of ROT's own methods in a Harmony Finalizer that
+    // swallows whatever it throws, turning a full game crash into a logged no-op. Purely
+    // reflection-based (ROT.dll isn't a compile-time reference), and a no-op itself if ROT
+    // isn't installed or a specific target method isn't found (e.g. renamed in a ROT update).
+    //
+    // Known targets:
+    // - ROT.HarmonyPatches.Core.WarSailsPatches.OnAgentRemovedPrefix2: static cctor throws NRE
+    //   the first time this runs (first battle death). Chain: Mission.OnAgentRemoved ->
+    //   BattleObserverMissionLogic.OnAgentRemoved -> WarSailsPatches.OnAgentRemovedPrefix2 ->
+    //   TypeInitializationException, uncaught, silent (no crash log).
+    // - ROT.CampaignBehaviors.ROTTradeBoundBehavior.TryToAssignTradeBoundForVillage: NRE inside
+    //   the native map distance model while assigning a village's trade bound, thrown from
+    //   OnNewGameCreated - blocks starting a new campaign entirely (crash happens before
+    //   character creation). Patched per-village rather than the whole UpdateTradeBounds loop,
+    //   so one bad village doesn't skip trade-bound assignment for every other village.
+    public static class ROTCompatGuard
+    {
+        private static bool _applied;
+
+        private static readonly (string TypeName, string MethodName)[] Targets =
+        {
+            ("ROT.HarmonyPatches.Core.WarSailsPatches", "OnAgentRemovedPrefix2"),
+            ("ROT.CampaignBehaviors.ROTTradeBoundBehavior", "TryToAssignTradeBoundForVillage"),
+        };
+
+        public static void TryApply(Harmony harmony)
+        {
+            if (_applied || harmony == null) return;
+            _applied = true;
+            try
+            {
+                var rotAssembly = AppDomain.CurrentDomain.GetAssemblies()
+                    .FirstOrDefault(a => a.GetName().Name == "ROT");
+                if (rotAssembly == null) return;
+
+                var finalizer = typeof(ROTCompatGuard).GetMethod(nameof(SwallowException),
+                    BindingFlags.Static | BindingFlags.NonPublic);
+
+                foreach (var (typeName, methodName) in Targets)
+                {
+                    try
+                    {
+                        var type = rotAssembly.GetType(typeName);
+                        var method = type?.GetMethod(methodName,
+                            BindingFlags.Static | BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                        if (method == null)
+                        {
+                            Log.Info($"[MBGA] ROTCompatGuard: target not found, skipped ({typeName}.{methodName})");
+                            continue;
+                        }
+                        harmony.Patch(method, finalizer: new HarmonyMethod(finalizer));
+                        Log.Info($"[MBGA] ROTCompatGuard: patched {typeName}.{methodName}");
+                    }
+                    catch (Exception ex) { Log.Exception($"[MBGA] ROTCompatGuard: failed to patch {typeName}.{methodName}", ex); }
+                }
+            }
+            catch (Exception ex) { Log.Exception("[MBGA] ROTCompatGuard.TryApply failed", ex); }
+        }
+
+        private static Exception SwallowException(Exception __exception)
+        {
+            if (__exception != null)
+                Log.Exception("[MBGA] ROTCompatGuard suppressed a crash from ROT", __exception);
+            return null;
+        }
+    }
+
+    // Some settlement (almost certainly from RoT's custom map content) has a null/incomplete
+    // field that native TaleWorlds.CampaignSystem.GameComponents.DefaultMapDistanceModel doesn't
+    // expect. Confirmed crashing from at least two of its methods so far, via completely
+    // unrelated callers each time: GetDistance (from RoT's own ROTTradeBoundBehavior, and
+    // separately from Bannerlord.ButterLib's GeopoliticsBehavior) and GetNeighborsOfFortification
+    // (from native Clan.ConsiderAndUpdateHomeSettlement during OnNewGameCreated). Patching one
+    // method at a time as new crash reports surface doesn't scale - this class has 18 public
+    // instance methods that all touch the same settlement/navigation data, any of which could
+    // hit the same bad field. Instead, reflectively patches EVERY public instance method on the
+    // type at once with one generic Harmony Finalizer that swallows the exception and fills in a
+    // type-appropriate safe default (0/false/empty list/etc.) based on the method's own return
+    // type, so callers keep running instead of the whole game crashing - regardless of which of
+    // the 18 methods turns out to be the next one hit.
+    public static class MapDistanceModelGuard
+    {
+        private static bool _applied;
+
+        public static void TryApply(Harmony harmony)
+        {
+            if (_applied || harmony == null) return;
+            _applied = true;
+            try
+            {
+                var finalizer = typeof(MapDistanceModelGuard).GetMethod(nameof(Finalizer), BindingFlags.Static | BindingFlags.NonPublic);
+                // Only the distance-computing methods (return float) - that's the actual crash surface
+                // (ROTTradeBoundBehavior->GetDistance). Patching ALL public methods generically also
+                // hit navigation-cache registration methods whose signatures (by-ref / interface out
+                // params like INavigationCache) Harmony's finalizer emitter chokes on, throwing a loud
+                // (caught) error at startup. Filtering to float-returning, non-by-ref methods keeps the
+                // guard where it matters and drops the noise.
+                var methods = typeof(DefaultMapDistanceModel).GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+                    .Where(m => !m.IsSpecialName && !m.IsGenericMethodDefinition
+                                && m.ReturnType == typeof(float)
+                                && m.GetParameters().All(p => !p.ParameterType.IsByRef && !p.ParameterType.IsPointer));
+                int patched = 0;
+                foreach (var method in methods)
+                {
+                    try { harmony.Patch(method, finalizer: new HarmonyMethod(finalizer)); patched++; }
+                    catch (Exception ex) { Log.Exception($"[MBGA] MapDistanceModelGuard: failed to patch {method.Name}", ex); }
+                }
+                Log.Info($"[MBGA] MapDistanceModelGuard: patched {patched} DefaultMapDistanceModel method(s)");
+            }
+            catch (Exception ex) { Log.Exception("[MBGA] MapDistanceModelGuard.TryApply failed", ex); }
+        }
+
+        private static Exception Finalizer(Exception __exception, MethodBase __originalMethod, ref object __result)
+        {
+            if (__exception == null) return null;
+            var name = (__originalMethod as MethodInfo)?.Name ?? "DefaultMapDistanceModel method";
+            Log.Exception($"[MBGA] MapDistanceModelGuard suppressed a crash in DefaultMapDistanceModel.{name}", __exception);
+
+            var returnType = (__originalMethod as MethodInfo)?.ReturnType;
+            if (returnType == null || returnType == typeof(void)) return null;
+            if (returnType == typeof(float)) { __result = 9999f; return null; }
+            if (returnType == typeof(bool)) { __result = false; return null; }
+            try { __result = Activator.CreateInstance(returnType); }
+            catch (Exception ex) { Log.Exception($"[MBGA] MapDistanceModelGuard: couldn't build a fallback {returnType} for {name}", ex); }
+            return null;
+        }
+    }
+
+    // Same "some settlement/culture from RoT's content has a null field the native code doesn't
+    // expect" root cause as MapDistanceModelGuard, but hitting a DIFFERENT, unrelated native
+    // system each time - after DefaultMapDistanceModel was covered, the very next crash report
+    // showed the exact same NullReferenceException-during-OnNewGameCreated pattern coming from
+    // TaleWorlds.CampaignSystem.CampaignBehaviors.BackstoryCampaignBehavior.OnNewGameCreated
+    // instead (backstory/culture data, nothing to do with map distances). Rather than write a new
+    // single-purpose guard class for every native OnNewGameCreated listener that turns out to
+    // choke on RoT's data, this is a small extensible list: add a (Type, MethodName) entry here
+    // and it gets the same Harmony Finalizer treatment as everything else in this file - swallow
+    // the exception, fill in a type-appropriate safe default return value, log it, keep going.
+    public static class NativeCrashGuard
+    {
+        private static bool _applied;
+
+        // (DeclaringTypeFullName, MethodName) resolved via Type.GetType() INSIDE TryApply's own
+        // try block, deliberately not typeof(...) on a static field - a static field initializer
+        // runs before TryApply's try/catch even starts, so any resolution failure there would be
+        // an uncaught TypeInitializationException invisible to our own logging, silently aborting
+        // whatever OnGameStart code runs after this call (exactly the kind of failure this class
+        // exists to prevent in OTHER code).
+        // DELIBERATELY EMPTY. This used to hold skip-prefix targets on native hero-creation methods
+        // (CreateHero, GetBirthAndDeathDay, CalculateNameScore, HeroInitializationArgs..ctor, etc.).
+        // That was a mistake: skip-prefix UNCONDITIONALLY suppresses the method on EVERY call, even
+        // on perfectly healthy data - so CreateHero (returns Hero) skip-returned null during NORMAL
+        // vanilla world creation, and every downstream consumer of that null then crashed. Each such
+        // crash got "fixed" with yet another skip, minting more nulls: a self-inflicted whack-a-mole.
+        // Proven by the user: the older Nexus build WITHOUT these skips starts a vanilla+BLT campaign
+        // cleanly. Everything moved to FinalizerTargets below (run normally, swallow ONLY on throw).
+        private static readonly (string TypeName, string MethodName)[] Targets =
+        {
+        };
+
+        // Top-level campaign-creation event handlers / loop passes. A Finalizer here lets the method
+        // RUN normally and swallows an exception ONLY if one is actually thrown - so on healthy data
+        // it is a complete no-op (identical to not patching at all), and on genuinely broken data
+        // (RoT templates, corrupted save/native files) it turns a hard crash into a logged, partial
+        // completion instead. One guard per OnNewGameCreated branch, never touching a leaf method, so
+        // there are no null returns to relocate the crash. This is the non-destructive replacement
+        // for the old skip-prefix Targets list.
+        private static readonly (string TypeName, string MethodName)[] FinalizerTargets =
+        {
+            // Backstory assignment pass.
+            ("TaleWorlds.CampaignSystem.CampaignBehaviors.BackstoryCampaignBehavior", "OnNewGameCreated"),
+            // Settlement companions (AdjustEquipment / CreateCompanionAndAddToSettlement live inside).
+            ("TaleWorlds.CampaignSystem.CampaignBehaviors.CompanionsCampaignBehavior", "OnNewGameCreated"),
+            // Settlement Notables (elders, merchants, guildmasters).
+            ("TaleWorlds.CampaignSystem.CampaignBehaviors.NotablesCampaignBehavior", "SpawnNotablesAtGameStart"),
+            // Initial NPC child generation across the world at game start.
+            ("TaleWorlds.CampaignSystem.CampaignBehaviors.InitialChildGenerationCampaignBehavior", "OnNewGameCreatedPartialFollowUp"),
+            // RoT-only unique-wanderer spawner (type absent on vanilla -> silently skipped there).
+            ("ROT.CampaignBehaviors.ROTSpawnUniqueWanderers", "SpawnHero"),
+            // RoT-only minor-faction hero-from-template patch (type absent on vanilla).
+            ("ROT.HarmonyPatches.CustomCompanions.HeroSpawnCampaignBehaviorPatches", "CreateMinorFactionHeroFromTemplate"),
+        };
+
+        public static void TryApply(Harmony harmony)
+        {
+            if (_applied || harmony == null) return;
+            _applied = true;
+            Log.Info($"[MBGA] NativeCrashGuard.TryApply: starting, {Targets.Length} target(s)");
+            try
+            {
+                // Three separate attempts to patch BackstoryCampaignBehavior.OnNewGameCreated with a
+                // Harmony Finalizer (which works fine on ~20 other native/third-party methods
+                // elsewhere in this file) never actually registered - confirmed via crash reports'
+                // own "Harmony Patches" listing showing every other guard's patch except this one,
+                // across three different reflection strategies to locate the method. Rather than
+                // guess a fourth time, switched to a Prefix that unconditionally skips the original
+                // method (returns false) - Harmony's simplest, most basic patch type, much smaller
+                // surface area for whatever is special-casing this specific method. Heavier-handed
+                // than the Finalizer approach elsewhere (no hero gets a backstory assigned at all,
+                // instead of only skipping the ones that would have crashed), but guaranteed to
+                // prevent the crash rather than silently failing to patch a third time.
+                var skipPrefix = typeof(NativeCrashGuard).GetMethod(nameof(SkipPrefix), BindingFlags.Static | BindingFlags.NonPublic);
+                foreach (var (typeName, methodName) in Targets)
+                {
+                    try
+                    {
+                        var type = AppDomain.CurrentDomain.GetAssemblies()
+                            .Select(a => { try { return a.GetType(typeName); } catch { return null; } })
+                            .FirstOrDefault(t => t != null);
+                        if (type == null)
+                        {
+                            Log.Info($"[MBGA] NativeCrashGuard: type not found, skipped ({typeName})");
+                            continue;
+                        }
+                        // methodName == ".ctor" targets a constructor (e.g. a nested DTO type
+                        // whose constructor itself throws) - MethodBase covers both MethodInfo
+                        // and ConstructorInfo, so the same Harmony.Patch/skip-prefix path works
+                        // for either once resolved.
+                        MethodBase method;
+                        if (methodName == ".ctor")
+                            method = type.GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).FirstOrDefault();
+                        else
+                            method = type.GetMethod(methodName,
+                                BindingFlags.Static | BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+                        if (method == null)
+                        {
+                            Log.Info($"[MBGA] NativeCrashGuard: method not found, skipped ({type.FullName}.{methodName})");
+                            continue;
+                        }
+                        harmony.Patch(method, prefix: new HarmonyMethod(skipPrefix));
+                        Log.Info($"[MBGA] NativeCrashGuard: patched {type.FullName}.{methodName} (skip-prefix)");
+                    }
+                    catch (Exception ex) { Log.Exception($"[MBGA] NativeCrashGuard: failed to patch {typeName}.{methodName}", ex); }
+                }
+
+                // Finalizer-swallow targets: run the method, eat whatever it throws (see comment on
+                // FinalizerTargets for why this beats leaf skip-prefix for loop-style void methods).
+                var swallowFinalizer = typeof(NativeCrashGuard).GetMethod(nameof(SwallowFinalizer), BindingFlags.Static | BindingFlags.NonPublic);
+                foreach (var (typeName, methodName) in FinalizerTargets)
+                {
+                    try
+                    {
+                        var type = AppDomain.CurrentDomain.GetAssemblies()
+                            .Select(a => { try { return a.GetType(typeName); } catch { return null; } })
+                            .FirstOrDefault(t => t != null);
+                        if (type == null)
+                        {
+                            Log.Info($"[MBGA] NativeCrashGuard: (finalizer) type not found, skipped ({typeName})");
+                            continue;
+                        }
+                        var method = type.GetMethod(methodName,
+                            BindingFlags.Static | BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+                        if (method == null)
+                        {
+                            Log.Info($"[MBGA] NativeCrashGuard: (finalizer) method not found, skipped ({type.FullName}.{methodName})");
+                            continue;
+                        }
+                        harmony.Patch(method, finalizer: new HarmonyMethod(swallowFinalizer));
+                        Log.Info($"[MBGA] NativeCrashGuard: patched {type.FullName}.{methodName} (finalizer-swallow)");
+                    }
+                    catch (Exception ex) { Log.Exception($"[MBGA] NativeCrashGuard: failed to finalizer-patch {typeName}.{methodName}", ex); }
+                }
+            }
+            catch (Exception ex) { Log.Exception("[MBGA] NativeCrashGuard.TryApply failed", ex); }
+        }
+
+        private static bool SkipPrefix(MethodBase __originalMethod)
+        {
+            Log.Info($"[MBGA] NativeCrashGuard: skipped {__originalMethod?.DeclaringType?.FullName}.{__originalMethod?.Name} entirely (known to crash on this data)");
+            return false;
+        }
+
+        // Returning null from a Finalizer tells Harmony "the exception is handled, swallow it".
+        // The original method already ran as far as it could before throwing, so partial work
+        // (notables/companions created before the bad one) is kept; only the crash is discarded.
+        private static Exception SwallowFinalizer(Exception __exception, MethodBase __originalMethod)
+        {
+            if (__exception != null)
+                Log.Exception($"[MBGA] NativeCrashGuard: swallowed a crash from {__originalMethod?.DeclaringType?.FullName}.{__originalMethod?.Name} (broken character/culture data)", __exception);
+            return null;
+        }
+    }
+#endif
+
     // A torn-down agent's C# wrapper can still be non-null while its underlying native object is
     // already destroyed (very common during tournament match transitions, which teardown agents
     // fast) - calling SetContourColor on that dead native object throws AccessViolationException,
@@ -51,6 +343,12 @@ namespace MakeBltGreatAgain
         public static void SafeSetContourColor(Agent agent, uint? color, bool alwaysVisible)
         {
             if (agent == null || !agent.IsActive()) return;
+            // MUST call the engine's AgentVisuals.SetContourColor here - calling SafeSetContourColor
+            // (this method) again is infinite self-recursion -> StackOverflowException, which .NET
+            // canNOT catch (the try/catch is useless against it) -> hard freeze + crash to desktop
+            // with no crash report. Triggered whenever an aura power (Heal/Damage/Fear/etc.) tints an
+            // agent's contour in battle. This exact bug was fixed earlier and regressed when the
+            // wanderer feature was restored from an older commit that predated the fix.
             try { agent.AgentVisuals?.SetContourColor(color, alwaysVisible); } catch { }
         }
     }
@@ -819,6 +1117,470 @@ public class BLTGuardModule : MBSubModuleBase
         }
     }
 
+    // Samodzielny system "Normalize Armor" dla turniejów, działający jako Postfix na natywnej metodzie
+    // TournamentFightMissionController.AddRandomClothes - NIE zależy od żadnych fork-owych metod
+    // (ApplyNormalizedArmor/BuildClassLoadout to metody dodane WYŁĄCZNIE w naszym forku, nie istnieją
+    // w oryginalnym DLL Randomchair22 - stąd Postfix na natywnej metodzie zamiast Prefix na nich).
+    // Uruchamia się zawsze PO oryginale (i po ewentualnym własnym NormalizeArmor forka, jeśli DLL jest
+    // forkiem), więc jego wynik jest ostateczny - nadpisuje slot pancerza preferując kulturę bohatera.
+    public class MBGATournamentLoadoutConfig
+    {
+        private const string ID = "MBGA - Tournament Loadout";
+        internal static void Register() => ActionManager.RegisterGlobalConfigType(ID, typeof(MBGATournamentLoadoutConfig));
+        internal static MBGATournamentLoadoutConfig Get() => ActionManager.GetGlobalConfig<MBGATournamentLoadoutConfig>(ID);
+
+        [DisplayName("Normalize Armor"), Description("Give tournament participants matching armor at a fixed tier, preferring each hero's own culture. Standalone MBGA re-implementation of the BLT tournament armor normalization feature."), UsedImplicitly]
+        public bool NormalizeArmor { get; set; } = false;
+
+        [DisplayName("Normalize Armor Tier"), Description("Armor tier (1-6) used when Normalize Armor is enabled."), UsedImplicitly]
+        public int NormalizeArmorTier { get; set; } = 4;
+    }
+
+    // DISABLED in the 1.3.15 Warsails line: tournament armor normalization was a TOR-specific feature
+    // and the fork's own BLTAdoptAHero already provides it (ApplyNormalizedArmor/BuildClassLoadout).
+    // Class-level [HarmonyPatch] removed so PatchAll skips it; the code stays dormant. (Belongs to the
+    // separate hidden TOR package, not here.)
+    internal static class TournamentCulturePatch
+    {
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(SandBox.Tournaments.MissionLogics.TournamentFightMissionController), "AddRandomClothes")]
+        private static void AddRandomClothesPostfix(CultureObject culture,
+            TaleWorlds.CampaignSystem.TournamentGames.TournamentParticipant participant)
+        {
+            try
+            {
+                var cfg = MBGATournamentLoadoutConfig.Get();
+                if (cfg == null || !cfg.NormalizeArmor || participant == null) return;
+
+                var heroCulture = participant.Character?.HeroObject?.Culture ?? culture;
+                int tier = Math.Max(0, Math.Min(5, cfg.NormalizeArmorTier - 1));
+                foreach (var (slot, itemType) in SkillGroup.ArmorIndexType)
+                {
+                    var item = SelectRandomItemNearestTier(
+                                   CampaignHelpers.AllItems.Where(i => i.Culture == heroCulture && i.ItemType == itemType), tier)
+                               ?? SelectRandomItemNearestTier(
+                                   CampaignHelpers.AllItems.Where(i => i.ItemType == itemType), tier);
+                    if (item != null)
+                        participant.MatchEquipment[slot] = new EquipmentElement(item);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("TournamentCulturePatch.AddRandomClothesPostfix failed", ex);
+            }
+        }
+
+        // EquipHero i GlobalCommonConfig (BLTAdoptAHero) sa klasami internal, wiec ich
+        // SelectRandomItemNearestTier / RestrictedItemIds nie sa dostepne z MBGA - lokalna
+        // reimplementacja tej samej logiki wyboru tieru (bez filtra restricted-item, ktory
+        // wymagalby dostepu do internal configu forka), zeby dzialac niezaleznie od DLL-a BLT.
+        private static ItemObject SelectRandomItemNearestTier(IEnumerable<ItemObject> items, int tier)
+        {
+            var allowed = items.ToList();
+            var atOrBelow = allowed.Where(i => (int)i.Tier <= tier).ToList();
+            if (atOrBelow.Count > 0)
+                return atOrBelow.GroupBy(item => (int)item.Tier).OrderByDescending(g => g.Key).FirstOrDefault()?.SelectRandom();
+            return allowed.GroupBy(item => (int)item.Tier).OrderBy(g => g.Key).FirstOrDefault()?.SelectRandom();
+        }
+    }
+
+    // Samodzielny refund za "!retinue clear" - fork zwraca poziom z KillRetinueAtIndex (int) i liczy
+    // zwrot z wlasnych kosztow tierow, ale oryginalny (niezmodyfikowany) DLL Randomchair22 ma
+    // KillRetinueAtIndex zwracajace void - nie da sie odczytac poziomu ani po fakcie. Zamiast tego
+    // czytamy CharacterObject.Tier jednostki PRZED usunieciem (Prefix) jako przyblizenie "poziomu"
+    // retinue, i liczymy zwrot z wlasnej (konfigurowalnej) tabeli kosztow tierow.
+    public class MBGARetinueRefundConfig
+    {
+        private const string ID = "MBGA - Retinue Refund";
+        internal static void Register() => ActionManager.RegisterGlobalConfigType(ID, typeof(MBGARetinueRefundConfig));
+        internal static MBGARetinueRefundConfig Get() => ActionManager.GetGlobalConfig<MBGARetinueRefundConfig>(ID);
+
+        [DisplayName("Enabled"), Description("Refund a fraction of gold spent when a retinue member is cleared with !retinue clear. Standalone re-implementation for an UNMODIFIED BLTAdoptAHero.dll (vanilla Randomchair22 build), since the exact gold spent isn't readable from outside - refund is estimated from the troop's own tier. Off by default: leave disabled if you're running the MesmerTurn fork, which already refunds this natively - enabling both would double the refund."), UsedImplicitly]
+        public bool Enabled { get; set; } = false;
+
+        [DisplayName("Refund Fraction"), Description("Fraction (0-1) of the estimated tier cost refunded on clear. 0.333 = a third, matching the original fork behavior."), UsedImplicitly]
+        public float RefundFraction { get; set; } = 0.333f;
+
+        [DisplayName("Cost Tier 1"), Description("Estimated gold cost for a Tier 1 retinue member (used only to compute the refund)."), UsedImplicitly]
+        public int CostTier1 { get; set; } = 25000;
+        [DisplayName("Cost Tier 2"), Description("Estimated gold cost for a Tier 2 retinue member."), UsedImplicitly]
+        public int CostTier2 { get; set; } = 50000;
+        [DisplayName("Cost Tier 3"), Description("Estimated gold cost for a Tier 3 retinue member."), UsedImplicitly]
+        public int CostTier3 { get; set; } = 100000;
+        [DisplayName("Cost Tier 4"), Description("Estimated gold cost for a Tier 4 retinue member."), UsedImplicitly]
+        public int CostTier4 { get; set; } = 175000;
+        [DisplayName("Cost Tier 5"), Description("Estimated gold cost for a Tier 5 retinue member."), UsedImplicitly]
+        public int CostTier5 { get; set; } = 275000;
+        [DisplayName("Cost Tier 6+"), Description("Estimated gold cost for a Tier 6 (or higher) retinue member."), UsedImplicitly]
+        public int CostTier6 { get; set; } = 400000;
+
+        internal int TotalCostUpToTier(int tier)
+        {
+            int[] costs = { CostTier1, CostTier2, CostTier3, CostTier4, CostTier5, CostTier6 };
+            int total = 0;
+            for (int i = 0; i < tier && i < costs.Length; i++) total += costs[i];
+            if (tier > costs.Length) total += (tier - costs.Length) * CostTier6;
+            return total;
+        }
+    }
+
+    [HarmonyPatch]
+    internal static class RetinueClearRefundPatch
+    {
+        [HarmonyPrefix]
+        [HarmonyPatch(typeof(BLTAdoptAHeroCampaignBehavior), "KillRetinueAtIndex")]
+        private static void KillRetinueAtIndexPrefix(Hero retinueOwnerHero, int index)
+        {
+            try
+            {
+                var cfg = MBGARetinueRefundConfig.Get();
+                if (cfg == null || !cfg.Enabled || retinueOwnerHero == null) return;
+
+                var troop = BLTAdoptAHeroCampaignBehavior.Current?.GetRetinue(retinueOwnerHero)?.ElementAtOrDefault(index);
+                if (troop == null) return;
+
+                int tier = Math.Max(0, troop.Tier);
+                int refund = (int)(cfg.TotalCostUpToTier(tier) * cfg.RefundFraction);
+                if (refund > 0)
+                    BLTAdoptAHeroCampaignBehavior.Current.ChangeHeroGold(retinueOwnerHero, refund);
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("RetinueClearRefundPatch.KillRetinueAtIndexPrefix failed", ex);
+            }
+        }
+    }
+
+    // BLTClanDiplomacyBehavior.IsLanded w oryginalnym DLL sprawdza tylko wlasne Fiefs klanu - klan
+    // ktory stracil wszystkie ziemie, ale ma zwasala z ziemia, jest blednie liczony jako "bezziemny"
+    // (np. zle liczy limit sojuszy MaxClanAlliances i zle wykrywa utrate ziemi w CheckFiefLoss, bo obie
+    // metody wewnetrznie wolaja IsLanded). Fork poprawia to uwzgledniajac zwasali - port jako pelna
+    // podmiana metody (Prefix + skip original), bo IsLanded jest public static wiec mozna ja wolac
+    // bezposrednio, a naprawa propaguje sie automatycznie do wszystkich wewnetrznych wywolan w tej klasie.
+    [HarmonyPatch]
+    internal static class DiplomacyVassalFixPatch
+    {
+        [HarmonyPrefix]
+        [HarmonyPatch(typeof(BLTClanDiplomacyBehavior), "IsLanded")]
+        private static bool IsLandedPrefix(Clan c, ref bool __result)
+        {
+            try
+            {
+                if (c == null) { __result = false; return false; }
+                if (c.Fiefs != null && c.Fiefs.Count > 0) { __result = true; return false; }
+
+                var vassals = VassalBehavior.Current?.GetVassalClans(c);
+                if (vassals != null)
+                {
+                    foreach (var v in vassals)
+                    {
+                        if (v?.Fiefs != null && v.Fiefs.Count > 0) { __result = true; return false; }
+                    }
+                }
+                __result = false;
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("DiplomacyVassalFixPatch.IsLandedPrefix failed", ex);
+                return true; // fall back to original on error
+            }
+        }
+    }
+
+    // Samodzielny system Prestige - fork ma cala te funkcje (!prestige, BLTAdoptAHeroCampaignBehavior
+    // .GetPrestigeLevel/DoPrestige/itd, 3 patche staty) jako wlasny dodatek, ktorego NIE MA w ogole w
+    // oryginalnym DLL Randomchair22 - metody te po prostu nie istnieja tam, wiec nie mozna ich wolac ani
+    // patchowac. Wlasna, niezalezna reimplementacja: wlasne przechowywanie poziomu prestizu (JSON, jak
+    // WandererRecord), wlasne liczenie killi, wlasna komenda "!mbgaprestige", wlasne bonusy staty (HP/
+    // obrazenia/pancerz) naklejone na te same natywne metody co fork patchuje. Nie resetuje sprzetu do T1
+    // przy prestizu (EquipHero.UpgradeEquipment jest internal w BLTAdoptAHero - niedostepne z zewnatrz).
+    public class MBGAPrestigeRecord
+    {
+        public int Level { get; set; } = 0;
+        public int KillsSincePrestige { get; set; } = 0;
+    }
+
+    public class BLTMBGAPrestigeBehavior : CampaignBehaviorBase
+    {
+        public static BLTMBGAPrestigeBehavior Current => Campaign.Current?.GetCampaignBehavior<BLTMBGAPrestigeBehavior>();
+
+        private Dictionary<string, MBGAPrestigeRecord> records = new Dictionary<string, MBGAPrestigeRecord>();
+
+        public override void RegisterEvents() { }
+
+        public override void SyncData(IDataStore dataStore)
+        {
+            string json = dataStore.IsSaving
+                ? Newtonsoft.Json.JsonConvert.SerializeObject(records ?? new Dictionary<string, MBGAPrestigeRecord>())
+                : null;
+            dataStore.SyncData("MBGAPrestigeJson", ref json);
+            if (!dataStore.IsSaving)
+            {
+                records = string.IsNullOrEmpty(json)
+                    ? new Dictionary<string, MBGAPrestigeRecord>()
+                    : (Newtonsoft.Json.JsonConvert.DeserializeObject<Dictionary<string, MBGAPrestigeRecord>>(json)
+                       ?? new Dictionary<string, MBGAPrestigeRecord>());
+            }
+            if (records == null) records = new Dictionary<string, MBGAPrestigeRecord>();
+        }
+
+        public MBGAPrestigeRecord GetOrCreate(Hero hero)
+        {
+            if (hero == null) return new MBGAPrestigeRecord();
+            if (!records.TryGetValue(hero.StringId, out var rec))
+            {
+                rec = new MBGAPrestigeRecord();
+                records[hero.StringId] = rec;
+            }
+            return rec;
+        }
+
+        public static int GetLevel(Hero hero)
+            => hero != null && Current != null && Current.records.TryGetValue(hero.StringId, out var r) ? r.Level : 0;
+
+        public void AddKill(Hero hero)
+        {
+            if (hero == null) return;
+            GetOrCreate(hero).KillsSincePrestige++;
+        }
+    }
+
+    public class MBGAPrestigeConfig
+    {
+        private const string ID = "MBGA - Prestige";
+        internal static void Register() => ActionManager.RegisterGlobalConfigType(ID, typeof(MBGAPrestigeConfig));
+        internal static MBGAPrestigeConfig Get() => ActionManager.GetGlobalConfig<MBGAPrestigeConfig>(ID);
+
+        [DisplayName("Enabled"), Description("Standalone re-implementation of the fork's Prestige system for an UNMODIFIED BLTAdoptAHero.dll. Off by default - leave disabled if running the MesmerTurn fork, which already has its own !prestige command."), UsedImplicitly]
+        public bool Enabled { get; set; } = false;
+
+        [DisplayName("Min Equipment Tier Required"), Description("Hero must be at least this equipment tier (1-8) to prestige."), UsedImplicitly]
+        public int MinTierRequired { get; set; } = 7;
+
+        [DisplayName("Required Kills"), Description("Kills needed since the last prestige (or since hire) before prestiging again. 0 = no kill requirement."), UsedImplicitly]
+        public int RequireKills { get; set; } = 200;
+
+        [DisplayName("Max Prestige Level"), Description("Maximum prestige level obtainable."), UsedImplicitly]
+        public int MaxPrestigeLevel { get; set; } = 5;
+
+        [DisplayName("Gold Per Kill Bonus % Per Level"), Description("Extra gold-per-kill percent bonus, per prestige level (informational only in this standalone version - not wired into a gold-per-kill reward)."), UsedImplicitly]
+        public int GoldPerKillBonusPercentPerLevel { get; set; } = 15;
+
+        [DisplayName("Damage Bonus % Per Level"), Description("Extra outgoing damage percent, per prestige level, cumulative."), UsedImplicitly]
+        public int DamageBonusPercentPerLevel { get; set; } = 5;
+
+        [DisplayName("Armor Bonus Per Level"), Description("Extra flat armor effectiveness, per prestige level, cumulative."), UsedImplicitly]
+        public int ArmorBonusPerLevel { get; set; } = 2;
+
+        [DisplayName("HP Bonus Per Level"), Description("Extra flat max HP, per prestige level, cumulative."), UsedImplicitly]
+        public int HPBonusPerLevel { get; set; } = 20;
+
+        [DisplayName("Chat Title Symbol"), Description("Symbol repeated per prestige level and shown before the hero's name (e.g. 3 stars at P3)."), UsedImplicitly]
+        public string ChatTitleSymbol { get; set; } = "★"; // ★
+
+        internal string GetChatTitle(int level) => level <= 0 ? "" : string.Concat(Enumerable.Repeat(ChatTitleSymbol, level));
+    }
+
+    [LocDescription("Resets your hero to a higher Prestige level once you meet the equipment tier and kill requirements, granting permanent HP/damage/armor bonuses. Standalone MBGA version - disabled by default, see \"MBGA - Prestige\" in Global Configs.")]
+    public class MBGAPrestigeCommand : ICommandHandler
+    {
+        public class Settings { }
+        public Type HandlerConfigType => typeof(Settings);
+
+        public void Execute(ReplyContext context, object config)
+        {
+            var cfg = MBGAPrestigeConfig.Get();
+            if (cfg == null || !cfg.Enabled) { ActionManager.SendReply(context, "MBGA Prestige is disabled."); return; }
+
+            var hero = BLTAdoptAHeroCampaignBehavior.Current?.GetAdoptedHero(context.UserName);
+            if (hero == null) { ActionManager.SendReply(context, "You don't have an adopted hero."); return; }
+
+            var behavior = BLTMBGAPrestigeBehavior.Current;
+            if (behavior == null) { ActionManager.SendReply(context, "Prestige system not ready."); return; }
+
+            var rec = behavior.GetOrCreate(hero);
+            string title = cfg.GetChatTitle(rec.Level);
+            string titlePrefix = string.IsNullOrEmpty(title) ? "" : $"{title} ";
+
+            if (rec.Level >= cfg.MaxPrestigeLevel)
+            {
+                ActionManager.SendReply(context, $"{titlePrefix}P{rec.Level} MAX prestige reached.");
+                return;
+            }
+
+            int currentTier = (BLTAdoptAHeroCampaignBehavior.Current?.GetEquipmentTier(hero) ?? -1) + 1; // 1-based
+            bool tierOk = currentTier >= cfg.MinTierRequired;
+            bool killsOk = cfg.RequireKills <= 0 || rec.KillsSincePrestige >= cfg.RequireKills;
+            int nextLevel = rec.Level + 1;
+
+            if (!tierOk)
+            {
+                ActionManager.SendReply(context, $"{titlePrefix}P{rec.Level} -> P{nextLevel} | Need T{cfg.MinTierRequired} (current T{currentTier}).");
+                return;
+            }
+            if (!killsOk)
+            {
+                ActionManager.SendReply(context, $"{titlePrefix}P{rec.Level} -> P{nextLevel} | Need {cfg.RequireKills - rec.KillsSincePrestige} more kills ({rec.KillsSincePrestige}/{cfg.RequireKills}).");
+                return;
+            }
+            if (Mission.Current != null)
+            {
+                ActionManager.SendReply(context, "Cannot prestige during an active battle!");
+                return;
+            }
+
+            rec.Level = nextLevel;
+            rec.KillsSincePrestige = 0;
+            string newTitle = cfg.GetChatTitle(rec.Level);
+            ActionManager.SendReply(context, $"{newTitle} {context.UserName} prestiged to P{rec.Level}! +{cfg.DamageBonusPercentPerLevel * rec.Level}% damage, +{cfg.ArmorBonusPerLevel * rec.Level} armor, +{cfg.HPBonusPerLevel * rec.Level} HP.");
+        }
+    }
+
+    internal class MBGAPrestigeKillTrackerBehavior : MissionBehavior
+    {
+        public override MissionBehaviorType BehaviorType => MissionBehaviorType.Other;
+
+        public override void OnAgentRemoved(Agent affectedAgent, Agent affectorAgent, AgentState agentState, KillingBlow blow)
+        {
+            try
+            {
+                var cfg = MBGAPrestigeConfig.Get();
+                if (cfg == null || !cfg.Enabled) return;
+                if (agentState != AgentState.Killed && agentState != AgentState.Unconscious) return;
+                if (affectorAgent == null || affectedAgent == null || affectorAgent == affectedAgent) return;
+                if (affectorAgent.Team != null && affectedAgent.Team != null && affectorAgent.Team.IsFriendOf(affectedAgent.Team)) return;
+
+                var killerHero = affectorAgent.GetAdoptedHero();
+                if (killerHero == null) return;
+
+                BLTMBGAPrestigeBehavior.Current?.AddKill(killerHero);
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("MBGAPrestigeKillTrackerBehavior.OnAgentRemoved failed", ex);
+            }
+        }
+    }
+
+    // DISABLED in the 1.3.15 Warsails line: Tier 7/8 is handled by the fork's own !equip command
+    // (Elite/Legendary tiers with costs). This standalone MBGA Tier 7-8 system (costs + stat
+    // multipliers) duplicated the equip side, so it's removed here. Class-level [HarmonyPatch] gone
+    // -> PatchAll skips it; the stat-multiplier patches no longer apply. Code stays dormant.
+    internal static class MBGAPrestigeStatPatches
+    {
+        // Patchowanie Agent.BaseHealthLimit/GetBaseArmorEffectivenessForBodyPart (nawet z pustym
+        // cialem, gdy Enabled=false) psuje renderowanie podgladu w character creation - agent
+        // podgladowy tam nie jest w pelni "prawdziwym" agentem. Prepare() to wbudowany hook Harmony:
+        // zwrocenie false oznacza calkowite pominiecie patchowania tej klasy, wiec przy domyslnym
+        // Enabled=false (99% instalacji) te gettery w ogole nie sa dotykane. Jesli funkcja jest
+        // wlaczona, wymaga to restartu gry zeby patch sie zaaplikowal (Prepare() liczy sie raz,
+        // przy OnSubModuleLoad) - akceptowalny kompromis wobec psucia character creation domyslnie.
+        private static bool Prepare() => MBGAPrestigeConfig.Get()?.Enabled == true;
+
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(Agent), "BaseHealthLimit", MethodType.Getter)]
+        private static void HealthPostfix(Agent __instance, ref float __result)
+        {
+            try
+            {
+                var cfg = MBGAPrestigeConfig.Get();
+                if (cfg == null || !cfg.Enabled) return;
+                if (__instance == null || !__instance.IsActive()) return;
+                var hero = (__instance.Character as CharacterObject)?.HeroObject;
+                if (hero == null) return;
+                int level = BLTMBGAPrestigeBehavior.GetLevel(hero);
+                if (level > 0) __result += cfg.HPBonusPerLevel * level;
+            }
+            catch (Exception ex) { Log.Exception("MBGAPrestigeStatPatches.HealthPostfix failed", ex); }
+        }
+
+        [HarmonyPrefix]
+        [HarmonyPatch(typeof(Mission), "RegisterBlow")]
+        private static void DamagePrefix(Agent attacker, ref Blow b)
+        {
+            try
+            {
+                var cfg = MBGAPrestigeConfig.Get();
+                if (cfg == null || !cfg.Enabled || attacker == null || !attacker.IsActive()) return;
+                var hero = attacker.GetAdoptedHero();
+                if (hero == null) return;
+                int level = BLTMBGAPrestigeBehavior.GetLevel(hero);
+                if (level <= 0) return;
+                float mult = 1f + (cfg.DamageBonusPercentPerLevel * level) / 100f;
+                b.BaseMagnitude *= mult;
+                b.InflictedDamage = (int)(b.InflictedDamage * mult);
+            }
+            catch (Exception ex) { Log.Exception("MBGAPrestigeStatPatches.DamagePrefix failed", ex); }
+        }
+
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(Agent), "GetBaseArmorEffectivenessForBodyPart")]
+        private static void ArmorPostfix(Agent __instance, ref float __result)
+        {
+            try
+            {
+                var cfg = MBGAPrestigeConfig.Get();
+                if (cfg == null || !cfg.Enabled) return;
+                if (__instance == null || !__instance.IsActive()) return;
+                var hero = (__instance.Character as CharacterObject)?.HeroObject;
+                if (hero == null) return;
+                int level = BLTMBGAPrestigeBehavior.GetLevel(hero);
+                if (level > 0) __result += cfg.ArmorBonusPerLevel * level;
+            }
+            catch (Exception ex) { Log.Exception("MBGAPrestigeStatPatches.ArmorPostfix failed", ex); }
+        }
+    }
+
+    // Mission-global, agent -> outgoing-damage-bonus-percent lookup. Populated/cleared by
+    // ComposedAuraPower's Buff/Debuff block (see docs/superpowers/plans/
+    // 2026-07-17-composed-aura-buff-debuff.md). Deliberately a plain static Dictionary, not a
+    // MissionBehavior - the game loop is single-threaded so no locking is needed, and this avoids
+    // ever needing to register a new MissionBehavior from inside a combat callback (the "Collection
+    // was modified" regression class from earlier this session).
+    internal static class ComposedAuraDamageTracker
+    {
+        private static readonly Dictionary<Agent, float> bonuses = new Dictionary<Agent, float>();
+        public static bool IsEmpty => bonuses.Count == 0;
+        public static void Set(Agent a, float pct) { if (a != null) bonuses[a] = pct; }
+        public static void Remove(Agent a) { if (a != null) bonuses.Remove(a); }
+        public static bool TryGet(Agent a, out float pct) => bonuses.TryGetValue(a, out pct);
+        public static void Clear() => bonuses.Clear();
+    }
+
+    // Real aura damage buff/debuff for ComposedAuraPower, reaching ANY agent (regular troops
+    // included, not just other adopted heroes) - unlike ComposedSelfBuffPower, which is limited to
+    // the owning hero's own agent because PowerHandler.Handlers.OnDoDamage/OnTakeDamage only fire
+    // for that one hero (see PowerHandler.CallHandlersForAgentPair in the fork). Modeled directly on
+    // MBGAPrestigeStatPatches.DamagePrefix above - same (Agent attacker, ref Blow b) signature
+    // (Harmony binds by parameter name, so these must stay named exactly "attacker"/"b"), same
+    // try/catch-and-log shape. No Prepare() gate: unlike Prestige (a global on/off config read at
+    // PatchAll time), this feature is assigned per-class and only "active" mid-mission - the
+    // ComposedAuraDamageTracker.IsEmpty early-out is the equivalent "costs nothing when unused"
+    // guarantee. This patch is discovered by the SAME already-guarded PatchAll() call
+    // (MbgaPatchGuard.ShouldApply()) as every other [HarmonyPatch] in this file - no new Harmony
+    // instance, no new PatchAll() call, so the multi-module fan-out regression class doesn't apply.
+    [HarmonyPatch]
+    internal static class ComposedAuraDamagePatch
+    {
+        [HarmonyPrefix]
+        [HarmonyPatch(typeof(Mission), "RegisterBlow")]
+        private static void DamagePrefix(Agent attacker, ref Blow b)
+        {
+            try
+            {
+                if (ComposedAuraDamageTracker.IsEmpty) return;
+                if (attacker == null || !attacker.IsActive()) return;
+                if (!ComposedAuraDamageTracker.TryGet(attacker, out float pct)) return;
+                float mult = 1f + pct / 100f;
+                if (mult < 0f) mult = 0f;
+                b.BaseMagnitude *= mult;
+                b.InflictedDamage = (int)(b.InflictedDamage * mult);
+            }
+            catch (Exception ex) { Log.Exception("ComposedAuraDamagePatch.DamagePrefix failed", ex); }
+        }
+    }
+
 
     // Samodzielna progresja Tier 7/8 - fork blokuje/odblokowuje to przez bramke wewnatrz duzej,
     // internal metody EquipHero.ExecuteInternal (nierozlaczna bez przepisania calosci equipu). Klucz:
@@ -1016,7 +1778,10 @@ public class BLTGuardModule : MBSubModuleBase
         public List<MBGAClassMountDef> Overrides { get; set; } = new List<MBGAClassMountDef>();
     }
 
-    [HarmonyPatch]
+    // DISABLED in the 1.3.15 Warsails line: the fork (BLTAdoptAHero 5.4.x) already provides
+    // Dragon/Chariot mounts per-class natively (HeroClassDef "Use Dragon/Chariot" checkboxes), so this
+    // standalone MBGA override duplicates it. Class-level [HarmonyPatch] removed -> PatchAll skips it;
+    // code stays dormant.
     internal static class MBGADragonChariotPatch
     {
         private static readonly string[] DragonGroundIds = { "dragon_black", "dragon_brown", "dragon_gold" };
@@ -1842,6 +2607,450 @@ public class BLTClanGoldModule : MBSubModuleBase
 
 
     // ======================================================================
+    // BLTGrail
+    // ======================================================================
+
+// ════════════════════════════════════════════════════════════════════════════
+    // USTAWIENIA JEDNEGO QUESTA (Weapon lub Armor)
+    // ════════════════════════════════════════════════════════════════════════════
+
+    [DisplayName("Grail Quest Settings")]
+    [TypeConverter(typeof(ExpandableObjectConverter))]
+    public class GrailQuestSettings
+    {
+        [DisplayName("Enabled"),
+         Description("Czy ten quest jest aktywny?"),
+         PropertyOrder(1)]
+        public bool Enabled { get; set; } = true;
+
+        [DisplayName("Quest Name"),
+         Description("Quest name shown in chat messages."),
+         PropertyOrder(2)]
+        public string QuestName { get; set; } = "Grail Quest";
+
+        [DisplayName("Daily Trigger Chance (0-1)"),
+         Description("Daily chance for the quest to appear. 0.02 = 2%."),
+         Range(0.0, 1.0), Editor(typeof(SliderFloatEditor), typeof(SliderFloatEditor)),
+         PropertyOrder(3)]
+        public float DailyChance { get; set; } = 0.02f;
+
+        [DisplayName("Battles Required"),
+         Description("Number of battles the hero must survive to complete the quest."),
+         PropertyOrder(4)]
+        public int BattlesRequired { get; set; } = 5;
+
+        [DisplayName("Count Player Battles"),
+         Description("When true — quest only counts battles where the streamer (MainHero) participates."),
+         PropertyOrder(5)]
+        public bool CountPlayerBattles { get; set; } = true;
+
+        [DisplayName("Use Hero Class Item"),
+         Description("When true — reward is matched to the hero's class (archer gets bow, warrior gets sword, etc.). Ignores Item Type field."),
+         PropertyOrder(6)]
+        public bool UseHeroClassItem { get; set; } = true;
+
+        [DisplayName("Item Type"),
+         Description("Reward type when UseHeroClassItem = false."),
+         PropertyOrder(7)]
+        public RewardHelpers.RewardType ItemType { get; set; } = RewardHelpers.RewardType.Weapon;
+
+        [DisplayName("Item Tier (1-6)"),
+         Description("Reward item tier. 6 = best available with modifier (like !smithweapon)."),
+         Range(1, 6),
+         PropertyOrder(8)]
+        public int ItemTier { get; set; } = 6;
+
+        [DisplayName("Item Power"),
+         Description("Reward item power multiplier — same as the slider in smithweapon."),
+         Range(0.1, 5.0), Editor(typeof(SliderFloatEditor), typeof(SliderFloatEditor)),
+         PropertyOrder(9)]
+        public float ItemPower { get; set; } = 1.6f;
+
+        [DisplayName("Item Name"),
+         Description("Name of the reward item. {ITEMNAME} = base item name."),
+         PropertyOrder(10)]
+        public string ItemName { get; set; } = "Holy Grail {ITEMNAME}";
+
+        [DisplayName("Quest Start Message"),
+         Description("Message shown when the quest starts. {hero} = hero name, {battles} = battles required, {quest} = quest name."),
+         PropertyOrder(10)]
+        public string QuestStartMessage { get; set; } =
+            "⚔ {quest}! {hero} must survive {battles} battles to claim a legendary item!";
+
+        [DisplayName("Quest Progress Message"),
+         Description("Message shown after each battle. {hero}, {current}, {required}, {quest}."),
+         PropertyOrder(11)]
+        public string QuestProgressMessage { get; set; } =
+            "🛡 [{quest}] {hero} survived a battle! Progress: {current}/{required}";
+
+        [DisplayName("Quest Complete Message"),
+         Description("Message shown on quest completion. {hero}, {quest}."),
+         PropertyOrder(12)]
+        public string QuestCompleteMessage { get; set; } =
+            "🏆 {hero} completed {quest} and claimed a legendary item!";
+
+        [DisplayName("Quest Failed Message"),
+         Description("Message shown when the hero dies. {hero}, {quest}."),
+         PropertyOrder(13)]
+        public string QuestFailedMessage { get; set; } =
+            "💀 {hero} has fallen! {quest} is lost...";
+    }
+
+    // ════════════════════════════════════════════════════════════════════════════
+    // GLOBALNY CONFIG — 2 oddzielne questy w BLTConfigure
+    // ════════════════════════════════════════════════════════════════════════════
+
+    [DisplayName("MBGA - Grail")]
+    public class GrailConfig
+    {
+        private const string ID = "MBGA - Grail";
+        internal static void Register() => ActionManager.RegisterGlobalConfigType(ID, typeof(GrailConfig));
+        internal static GrailConfig Get() => ActionManager.GetGlobalConfig<GrailConfig>(ID);
+
+        [DisplayName("Weapon Quest"),
+         Description("Quest that rewards a legendary weapon."),
+         PropertyOrder(1)]
+        public GrailQuestSettings WeaponQuest { get; set; } = new GrailQuestSettings
+        {
+            QuestName    = "Holy Blade Quest",
+            ItemType     = RewardHelpers.RewardType.Weapon,
+            ItemName     = "Holy Grail Blade",
+            QuestCompleteMessage = "🏆 {hero} has claimed the Holy Grail Blade!",
+            QuestFailedMessage   = "💀 {hero} has fallen! The Holy Blade Quest is lost...",
+        };
+
+        [DisplayName("Armor Quest"),
+         Description("Quest that rewards legendary armor."),
+         PropertyOrder(2)]
+        public GrailQuestSettings ArmorQuest { get; set; } = new GrailQuestSettings
+        {
+            QuestName    = "Holy Armor Quest",
+            ItemType     = RewardHelpers.RewardType.Armor,
+            ItemName     = "Holy Grail Armor",
+            QuestCompleteMessage = "🏆 {hero} has claimed the Holy Grail Armor!",
+            QuestFailedMessage   = "💀 {hero} has fallen! The Holy Armor Quest is lost...",
+        };
+    }
+
+    // ════════════════════════════════════════════════════════════════════════════
+    // STAN AKTYWNEGO QUESTA
+    // ════════════════════════════════════════════════════════════════════════════
+
+    public class GrailActiveQuest
+    {
+        public Hero             Hero            { get; set; }
+        public GrailQuestSettings Settings      { get; set; }
+        public int              BattlesSurvived { get; set; }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════════
+    // MODULE
+    // ════════════════════════════════════════════════════════════════════════════
+
+    public class BLTGrailModule : MBSubModuleBase
+    {
+        public BLTGrailModule() { try { GrailConfig.Register(); } catch (Exception ex) { Log.Exception("[Grail] Register failed", ex); } }
+
+        protected override void OnSubModuleLoad()
+        {
+            base.OnSubModuleLoad();
+            Log.Info("[BLTGrail] Loaded.");
+        }
+
+        protected override void OnGameStart(Game game, IGameStarter gameStarter)
+        {
+            base.OnGameStart(game, gameStarter);
+            if (gameStarter is CampaignGameStarter cs)
+                cs.AddBehavior(new GrailCampaignBehavior());
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════════
+    // CAMPAIGN BEHAVIOR
+    // ════════════════════════════════════════════════════════════════════════════
+
+    public class GrailCampaignBehavior : CampaignBehaviorBase
+    {
+        public static GrailCampaignBehavior Current { get; private set; }
+
+        // Two independent slots — weapon and armor quests can run simultaneously
+        private GrailActiveQuest _weaponQuest;
+        private GrailActiveQuest _armorQuest;
+
+        public GrailActiveQuest WeaponQuest => _weaponQuest;
+        public GrailActiveQuest ArmorQuest  => _armorQuest;
+
+        public override void RegisterEvents()
+        {
+            Current = this;
+            CampaignEvents.DailyTickEvent.AddNonSerializedListener(this, OnDailyTick);
+            CampaignEvents.MapEventEnded.AddNonSerializedListener(this, OnMapEventEnded);
+            CampaignEvents.HeroKilledEvent.AddNonSerializedListener(this, OnHeroKilled);
+        }
+
+        public override void SyncData(IDataStore dataStore) { }
+
+        // ── Daily tick ────────────────────────────────────────────────────────
+
+        private void OnDailyTick()
+        {
+            var cfg = GrailConfig.Get();
+            if (cfg == null) return;
+
+            // Tylko jeden quest na raz — jeśli cokolwiek aktywne, nie startuj kolejnego
+            if (_weaponQuest == null && _armorQuest == null)
+            {
+                // Losuj który typ questa odpali (żeby nie faworyzować broni)
+                if (MBRandom.RandomInt(2) == 0)
+                {
+                    TryTriggerQuest(cfg.WeaponQuest, ref _weaponQuest);
+                    if (_weaponQuest == null)
+                        TryTriggerQuest(cfg.ArmorQuest, ref _armorQuest);
+                }
+                else
+                {
+                    TryTriggerQuest(cfg.ArmorQuest, ref _armorQuest);
+                    if (_armorQuest == null)
+                        TryTriggerQuest(cfg.WeaponQuest, ref _weaponQuest);
+                }
+            }
+
+            // Pokaż postęp aktywnego questa w overlaycie
+            ShowProgress(_weaponQuest);
+            ShowProgress(_armorQuest);
+        }
+
+        private static void TryTriggerQuest(GrailQuestSettings settings, ref GrailActiveQuest slot)
+        {
+            if (!settings.Enabled) return;
+            if (slot != null) return;  // już aktywny
+
+            if (MBRandom.RandomFloat > settings.DailyChance) return;
+
+            var candidates = Hero.AllAliveHeroes
+                .Where(h => h != null && h.IsAdopted())
+                .ToList();
+            if (candidates.Count == 0) return;
+
+            var chosen = candidates[MBRandom.RandomInt(candidates.Count)];
+            slot = new GrailActiveQuest
+            {
+                Hero            = chosen,
+                Settings        = settings,
+                BattlesSurvived = 0,
+            };
+
+            var msg = settings.QuestStartMessage
+                .Replace("{quest}",   settings.QuestName)
+                .Replace("{hero}",    chosen.FirstName?.Raw() ?? chosen.Name?.Raw())
+                .Replace("{battles}", settings.BattlesRequired.ToString());
+
+            Notify(msg, chosen);
+            Log.Info($"[BLTGrail] Quest '{settings.QuestName}' started for {chosen.Name}");
+        }
+
+        private static void ShowProgress(GrailActiveQuest quest)
+        {
+            if (quest == null) return;
+            var msg = $"[{quest.Settings.QuestName}] {quest.Hero?.FirstName?.Raw()}: " +
+                      $"{quest.BattlesSurvived}/{quest.Settings.BattlesRequired} battles";
+            Log.ShowInformation(msg, quest.Hero?.CharacterObject);
+        }
+
+        // ── MapEvent ended ────────────────────────────────────────────────────
+
+        private void OnMapEventEnded(MapEvent mapEvent)
+        {
+            ProcessQuestBattle(mapEvent, ref _weaponQuest);
+            ProcessQuestBattle(mapEvent, ref _armorQuest);
+        }
+
+        private void ProcessQuestBattle(MapEvent mapEvent, ref GrailActiveQuest slot)
+        {
+            if (slot == null) return;
+            var hero = slot.Hero;
+            if (hero == null || !hero.IsAlive) return;
+
+            // Liczymy TYLKO bitwy w których bierze udział MainHero (streamer)
+            if (!mapEvent.IsPlayerMapEvent) return;
+
+            bool participated = mapEvent.InvolvedParties
+                .Any(p => p?.LeaderHero == hero
+                       || p?.MemberRoster?.Contains(hero.CharacterObject) == true);
+            if (!participated) return;
+
+            slot.BattlesSurvived++;
+            Log.Info($"[BLTGrail] '{slot.Settings.QuestName}' {hero.Name}: " +
+                     $"{slot.BattlesSurvived}/{slot.Settings.BattlesRequired}");
+
+            if (slot.BattlesSurvived >= slot.Settings.BattlesRequired)
+            {
+                CompleteQuest(ref slot);
+            }
+            else
+            {
+                var msg = slot.Settings.QuestProgressMessage
+                    .Replace("{quest}",    slot.Settings.QuestName)
+                    .Replace("{hero}",     hero.FirstName?.Raw())
+                    .Replace("{current}",  slot.BattlesSurvived.ToString())
+                    .Replace("{required}", slot.Settings.BattlesRequired.ToString());
+                Notify(msg, hero);
+            }
+        }
+
+        // ── Hero killed ───────────────────────────────────────────────────────
+
+        private void OnHeroKilled(Hero victim, Hero killer,
+            TaleWorlds.CampaignSystem.Actions.KillCharacterAction.KillCharacterActionDetail detail,
+            bool showNotification)
+        {
+            FailQuestIfVictim(victim, ref _weaponQuest);
+            FailQuestIfVictim(victim, ref _armorQuest);
+        }
+
+        private static void FailQuestIfVictim(Hero victim, ref GrailActiveQuest slot)
+        {
+            if (slot == null || slot.Hero != victim) return;
+            var msg = slot.Settings.QuestFailedMessage
+                .Replace("{quest}", slot.Settings.QuestName)
+                .Replace("{hero}",  victim.FirstName?.Raw());
+            Notify(msg, victim);
+            Log.Info($"[BLTGrail] Quest '{slot.Settings.QuestName}' failed — {victim.Name} killed.");
+            slot = null;
+        }
+
+        // ── Nagroda ───────────────────────────────────────────────────────────
+
+        private static void CompleteQuest(ref GrailActiveQuest slot)
+        {
+            var hero     = slot.Hero;
+            var settings = slot.Settings;
+            slot = null;  // wyczyść przed GenerateReward (w razie wyjątku)
+
+            try
+            {
+                var heroClass = BLTAdoptAHeroCampaignBehavior.Current?.GetClass(hero);
+                // tier > 5 triggers custom modifier generation (same as !smithweapon passing tier=6)
+                int tier = settings.ItemTier >= 6 ? 6 : Math.Max(0, settings.ItemTier - 1);
+                var modifier = GetBLTModifiers();
+
+                // GenerateRewardType(Weapon) już używa heroClass wewnętrznie — nie nadpisuj ItemType
+                // Armor Quest zostaje Armor, Weapon Quest dobiera broń do klasy bohatera
+                var rewardType = settings.ItemType;
+
+                var (item, mod, itemSlot) = RewardHelpers.GenerateRewardType(
+                    rewardType, tier, hero, heroClass,
+                    allowDuplicates: true,
+                    modifierDef: modifier,
+                    customItemName: string.IsNullOrWhiteSpace(settings.ItemName) ? null : settings.ItemName,
+                    customItemPower: settings.ItemPower);
+
+                // Jeśli nie znaleziono itemka z klasą, spróbuj bez klasy
+                if (item == null && heroClass != null)
+                    (item, mod, itemSlot) = RewardHelpers.GenerateRewardType(
+                        rewardType, tier, hero, null,
+                        allowDuplicates: true, modifierDef: modifier,
+                        customItemName: string.IsNullOrWhiteSpace(settings.ItemName) ? null : settings.ItemName,
+                        customItemPower: settings.ItemPower);
+
+                if (item == null)
+                {
+                    Log.Error($"[BLTGrail] Could not generate reward for {hero.Name}");
+                    return;
+                }
+
+                // Najpierw zarejestruj item przez BLT (dodaje do storage)
+                RewardHelpers.AssignCustomReward(hero, item, mod, itemSlot);
+
+                // Force-equip: Grail reward goes directly into the slot even if ShouldReplaceItem would refuse
+                string reward = item.Name?.ToString() ?? "Holy Grail Item";
+                if (itemSlot != EquipmentIndex.None)
+                {
+                    try
+                    {
+                        hero.BattleEquipment[itemSlot] = new EquipmentElement(item, mod);
+                        hero.CivilianEquipment[itemSlot] = new EquipmentElement(item, mod);
+                    }
+                    catch { }
+                }
+                else
+                {
+                    // Brak konkretnego slotu — szukaj pierwszego pasującego wolnego lub najsłabszego
+                    for (var idx = EquipmentIndex.WeaponItemBeginSlot; idx < EquipmentIndex.NumAllWeaponSlots; idx++)
+                    {
+                        var current = hero.BattleEquipment[idx];
+                        if (current.IsEmpty || (!BLTAdoptAHeroCampaignBehavior.Current
+                                .GetCustomItems(hero).Any(ci => ci.Item == current.Item)))
+                        {
+                            try
+                            {
+                                hero.BattleEquipment[idx] = new EquipmentElement(item, mod);
+                                hero.CivilianEquipment[idx] = new EquipmentElement(item, mod);
+                                break;
+                            }
+                            catch { }
+                        }
+                    }
+                }
+
+                var msg = settings.QuestCompleteMessage
+                    .Replace("{quest}", settings.QuestName)
+                    .Replace("{hero}",  hero.FirstName?.Raw())
+                    + $" [{reward}]";
+
+                Notify(msg, hero);
+                Log.Info($"[BLTGrail] Quest '{settings.QuestName}' complete! {hero.Name} received: {reward}");
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("[BLTGrail] CompleteQuest failed", ex);
+            }
+        }
+
+        // ── Helpers ───────────────────────────────────────────────────────────
+
+        // Pobiera CustomRewardModifiers z BLTAdoptAHeroModule.CommonConfig (internal)
+        // — ten sam modifier co !smithweapon używa
+        private static RandomItemModifierDef GetBLTModifiers()
+        {
+            try
+            {
+                var moduleType = typeof(BLTAdoptAHeroCampaignBehavior).Assembly
+                    .GetTypes().FirstOrDefault(t => t.Name == "BLTAdoptAHeroModule");
+                var prop = moduleType?.GetProperty("CommonConfig",
+                    BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                var commonConfig = prop?.GetValue(null);
+                var modProp = commonConfig?.GetType()
+                    .GetProperty("CustomRewardModifiers",
+                        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                return modProp?.GetValue(commonConfig) as RandomItemModifierDef
+                    ?? new RandomItemModifierDef();
+            }
+            catch { return new RandomItemModifierDef(); }
+        }
+
+        private static void Notify(string message, Hero hero = null)
+        {
+            Log.ShowInformation(message, hero?.CharacterObject);
+            try
+            {
+                var serviceType = Type.GetType("BannerlordTwitch.Twitch.TwitchService, BannerlordTwitch");
+                var service = serviceType
+                    ?.GetProperty("Current", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+                    ?.GetValue(null);
+                var bot = service?.GetType()
+                    .GetField("bot", BindingFlags.Instance | BindingFlags.NonPublic)
+                    ?.GetValue(service);
+                bot?.GetType()
+                    .GetMethod("SendChat", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                    ?.Invoke(bot, new object[] { new[] { message } });
+            }
+            catch { }
+        }
+    }
+
+
+    // ======================================================================
     // BLTAuras
     // ======================================================================
 
@@ -1854,9 +3063,23 @@ public class BLTAurasModule : MBSubModuleBase
             ActionManager.RegisterAll(typeof(BLTAurasModule).Assembly);
             // Rejestracja w konstruktorze — niezależna od PatchAll, na pewno wykona się przed ładowaniem ustawień
             try { PowerProgressionGlobalConfig.Register(); } catch (Exception ex) { Log.Exception("[PowerProg] Register failed", ex); }
+            // TOR-only configs (Culture Restriction / Equip From Culture) NOT registered in the
+            // 1.3.15 Warsails line - they belong to the separate hidden TOR package. Classes stay
+            // dormant in the DLL; without Register() they never appear in the config UI.
+            try { WandererGlobalConfig.Register(); } catch (Exception ex) { Log.Exception("[Wanderer] Register failed", ex); }
             try { AdrenalineGlobalConfig.Register(); } catch (Exception ex) { Log.Exception("[Adrenaline] Register failed", ex); }
-            try { MBGATier78Config.Register(); } catch (Exception ex) { Log.Exception("[Tier78] Register failed", ex); }
-            try { MBGADragonChariotConfig.Register(); } catch (Exception ex) { Log.Exception("[DragonChariot] Register failed", ex); }
+            try { HeroBarGlobalConfig.Register(); } catch (Exception ex) { Log.Exception("[HeroBar] Register failed", ex); }
+            // MBGA - Tournament Loadout NOT registered in 1.3.15 Warsails line: TOR-specific and the
+            // fork already provides tournament armor normalization. Class dormant in DLL.
+            try { MBGARetinueRefundConfig.Register(); } catch (Exception ex) { Log.Exception("[RetinueRefund] Register failed", ex); }
+            // MBGA - Prestige NOT registered in 1.3.15 Warsails line: the fork (BLTAdoptAHero 5.4.x)
+            // has native prestige (Global Common Config > Prestige System, handler PrestigeHero). The
+            // config's !prestige command is repointed to PrestigeHero. MBGA prestige classes dormant.
+            try { MBGADiscardRefundConfig.Register(); } catch (Exception ex) { Log.Exception("[DiscardRefund] Register failed", ex); }
+            // MBGA - Tier 7-8 Progression NOT registered in 1.3.15 Warsails line: the fork's !equip
+            // already provides Tier 7/8 (Elite/Legendary). Duplicate. Class + patches dormant.
+            // MBGA - Dragon-Chariot Mounts NOT registered in 1.3.15 Warsails line: the fork already
+            // provides Dragon/Chariot per-class (HeroClassDef). Duplicate. Class dormant in DLL.
         }
 
         protected override void OnSubModuleLoad()
@@ -1878,6 +3101,9 @@ public class BLTAurasModule : MBSubModuleBase
                     harmony.Patch(target, prefix: new HarmonyMethod(prefix));
                 else
                     Log.Info($"[PowerProg] Patch target/prefix not found (target={target != null}, prefix={prefix != null})");
+
+                // TOR-only culture patches (Culture Restriction / Equip From Culture) NOT applied in
+                // the 1.3.15 Warsails line - they belong to the separate hidden TOR package.
 
                 // Human children — ręcznie raz (nie [HarmonyPatch]/PatchAll)
                 var childTarget = HumanChildPatch.TargetMethod();
@@ -1907,19 +3133,46 @@ public class BLTAurasModule : MBSubModuleBase
                 else
                     Log.Info($"[AdrenalineCharge] Patch target/prefix not found (target={chargeTarget != null}, prefix={chargePrefix != null})");
 
-                Log.Info("[BLTAuras] Loaded: PoisonStrike / Berserk / LastStand / Taunt / Auras / Kick / JumpAttack / Teleport / PowerProgression / BannerFix / CultureRestriction / HumanChild");
+                Log.Info("[BLTAuras] Loaded: PoisonStrike / Berserk / LastStand / Taunt / Auras / Kick / JumpAttack / Teleport / PowerProgression / BannerFix / HumanChild");
             }
             catch (Exception ex)
             {
                 Log.Exception("[BLTAuras] Load failed", ex);
             }
 
-            // BLTAdoptAHero.BLTExternalStats to bridge dodany WYLACZNIE w naszym forku (zasila
-            // customowy pasek HUD V2 - HTML/CSS/JS zywy tylko w forku). Nie istnieje w oryginalnym
-            // DLL Randomchair22, wiec nie moze byc bezposrednim odwolaniem w kodzie (blad kompilacji,
-            // nie do naprawienia przez try/catch - to typ nieznaleziony w czasie kompilacji). Skoro
-            // nakladka HUD V2 i tak nie jest portowana do MBGA standalone (wymaga plikow zasobow,
-            // nie tylko kodu), ten blok zostal usuniety zamiast zamieniony na refleksje.
+            // Wire the BLTAdoptAHero.BLTExternalStats bridge so the fork's new hero bar / overlay
+            // (BLTHeroWidgetBehavior) actually reads OUR config + wanderer/adrenaline data. Without
+            // this, GetUseNewHeroBarLayout stays null -> fork falls back to the OLD 5.2.4 bar and the
+            // overlay toggles do nothing (exactly the "no new bar / no overlay" symptom). Done via
+            // reflection, NOT a direct reference: the type exists in the bundled fork DLL but not in
+            // the original Randomchair22 DLL, so a compile-time reference would break other builds.
+            try
+            {
+                var ext = AppDomain.CurrentDomain.GetAssemblies()
+                    .Select(a => { try { return a.GetType("BLTAdoptAHero.BLTExternalStats"); } catch { return null; } })
+                    .FirstOrDefault(t => t != null);
+                if (ext != null)
+                {
+                    void Set<T>(string field, T value) where T : class
+                    { try { ext.GetField(field, BindingFlags.Public | BindingFlags.Static)?.SetValue(null, value); } catch (Exception e) { Log.Exception($"[HeroBar] bridge set {field}", e); } }
+
+                    // Toggles (config lives in MBGA HeroBarGlobalConfig now).
+                    Set("GetUseNewHeroBarLayout", (Func<bool>)(() => HeroBarGlobalConfig.Get()?.UseNewHeroBarLayout ?? true));
+                    Set("GetShowSideBars",        (Func<bool>)(() => HeroBarGlobalConfig.Get()?.ShowSideBars ?? true));
+                    Set("GetShowMissionOverlay",  (Func<bool>)(() => HeroBarGlobalConfig.Get()?.ShowMissionOverlay ?? true));
+                    // Data feeds for the bar/overlay.
+                    Set("CompanionCount",   (Func<Hero, int>)(h => BLTWandererBehavior.CountForHero(h)));
+                    Set("IsWandererHero",   (Func<Hero, bool>)(h => BLTWandererBehavior.IsWandererStringId(h?.StringId)));
+                    Set("WandererKillCount",(Func<Hero, int>)(h => BLTWandererKillTracker.Get(h)));
+                    Set("AdrenalineFraction",(Func<Hero, float>)(h => AdrenalineMissionBehavior.RemainingFraction(h)));
+                    Log.Info("[HeroBar] BLTExternalStats bridge wired (new bar/overlay toggles + wanderer/adrenaline feeds).");
+                }
+                else
+                {
+                    Log.Info("[HeroBar] BLTExternalStats type not found - running without the fork bar bridge (standalone?).");
+                }
+            }
+            catch (Exception ex) { Log.Exception("[HeroBar] BLTExternalStats bridge wiring failed", ex); }
         }
 
         protected override void OnGameStart(Game game, IGameStarter gameStarterObject)
@@ -1928,13 +3181,30 @@ public class BLTAurasModule : MBSubModuleBase
             if (gameStarterObject is CampaignGameStarter campaignStarter)
             {
                 campaignStarter.AddBehavior(new BLTBannerSanitizerBehavior());
+                campaignStarter.AddBehavior(new BLTWandererBehavior());
+                // BLTMBGAPrestigeBehavior NOT added - using the fork's native prestige instead.
             }
+#if BLT_1315
+            ROTCompatGuard.TryApply(harmony);
+            MapDistanceModelGuard.TryApply(harmony);
+            NativeCrashGuard.TryApply(harmony);
+#endif
         }
 
         public override void OnMissionBehaviorInitialize(Mission mission)
         {
             base.OnMissionBehaviorInitialize(mission);
+            mission.AddMissionBehavior(new WandererSpawnMissionBehavior());
             mission.AddMissionBehavior(new AdrenalineMissionBehavior());
+            // Added eagerly at mission start, NOT lazily on first use. Both NecromancyMissionBehavior
+            // and BLTTimedBuffBehavior otherwise get AddMissionBehavior()'d from inside a combat
+            // callback (OnGotAKill / buff application), which mutates the mission's behavior list
+            // while the engine is iterating it -> "Collection was modified" InvalidOperationException.
+            // Both are no-ops when idle, so adding them up front is free. (Their lazy Track()/Get()
+            // fallbacks stay as harmless safety nets - Current will already be set here.)
+            mission.AddMissionBehavior(new BLTTimedBuffBehavior());
+            mission.AddMissionBehavior(new NecromancyMissionBehavior());
+            // MBGAPrestigeKillTrackerBehavior NOT added - using the fork's native prestige instead.
         }
 
     }
@@ -1968,6 +3238,649 @@ public class BLTAurasModule : MBSubModuleBase
             }
             catch { }
         }
+    }
+
+    // ============================================================================
+    // COMPOSABLE POWER ENGINE -- PHASE 1 PILOT ("Uprising of the Peasants" 5.4.1)
+    // See docs/superpowers/plans/2026-07-17-uprising-of-the-peasants-composable-powers.md
+    //
+    // Two reusable effect helpers extracted from PoisonStrikePower / DamageAuraPower below (kept
+    // byte-for-byte untouched - this pilot runs SIDE BY SIDE with the originals, never replaces
+    // them). A single new opt-in power, ComposedPowerDef, composes these helpers to prove that one
+    // power slot can express what used to require several (e.g. "Damage Over Time" on-hit + a
+    // "Damage Aura" pulse + an aura-wide Slow, all from ONE power entry - the "Blizzard" combo).
+    //
+    // Deliberately NOT a new MissionBehavior/dispatcher: both helpers wire onto the SAME
+    // PowerHandler.Handlers bus every other power already uses (handlers.OnDoDamage/OnSlowTick),
+    // registered inside OnActivation exactly like every existing power - no new Harmony patches,
+    // no new mission-behavior registration, so none of today's three regression classes (contour
+    // self-recursion, lazy mid-combat AddMissionBehavior, PatchAll fan-out) apply here by
+    // construction. Both helpers call ONLY the shared ContourHelpers.SafeSetContourColor - never
+    // define their own copy - keeping the contour-recursion surface at the same call sites as
+    // every other power in this file.
+    // ============================================================================
+
+    // Wires an on-hit damage-over-time effect (poison/bleed/burn are all this same primitive with
+    // different tuning/color) onto a hero's existing power-handler bus. Extracted verbatim from
+    // PoisonStrikePower.OnActivation - same Blow-construction, same tracked-agent dictionary, same
+    // cleanup-on-deactivate/mission-over pattern, just parameterized instead of hardcoded.
+    public class DamageOverTimeEffect
+    {
+        private readonly int damagePerTick;
+        private readonly int durationTicks;
+        private readonly PoisonApplyOn applyOn;
+        private readonly bool showContour;
+        private readonly uint contourColor;
+        private readonly float weaponDropChancePercent;
+        private readonly float dismountChancePercent;
+        private readonly Dictionary<Agent, int> tracked = new Dictionary<Agent, int>();
+
+        public DamageOverTimeEffect(int damagePerTick, int durationTicks, PoisonApplyOn applyOn,
+            bool showContour, uint contourColor, float weaponDropChancePercent = 0f, float dismountChancePercent = 0f)
+        {
+            this.damagePerTick = damagePerTick;
+            this.durationTicks = durationTicks;
+            this.applyOn = applyOn;
+            this.showContour = showContour;
+            this.contourColor = contourColor;
+            this.weaponDropChancePercent = weaponDropChancePercent;
+            this.dismountChancePercent = dismountChancePercent;
+        }
+
+        // Caller wires Cleanup() to whatever deactivation/mission-over hook is appropriate on its
+        // side - kept as a plain public method instead of taking DeactivationHandler directly,
+        // since that type is `protected` on DurationMissionHeroPowerDefBase and not visible to an
+        // unrelated standalone helper class like this one.
+        public void Wire(Hero hero, PowerHandler.Handlers handlers)
+        {
+            handlers.OnDoDamage += (attacker, victim, blowParams) =>
+            {
+                if (victim == null || !victim.IsActive()) return;
+                if (attacker == null || !victim.IsEnemyOf(attacker)) return;
+                if (applyOn != PoisonApplyOn.Both)
+                {
+                    bool isRanged = attacker != null
+                        && !attacker.WieldedWeapon.IsEmpty
+                        && attacker.WieldedWeapon.CurrentUsageItem?.IsRangedWeapon == true;
+                    if (applyOn == PoisonApplyOn.RangedOnly && !isRanged) return;
+                    if (applyOn == PoisonApplyOn.MeleeOnly && isRanged) return;
+                }
+                tracked[victim] = durationTicks;
+                if (showContour) try { SafeSetContourColor(victim, contourColor, true); } catch { }
+            };
+
+            handlers.OnSlowTick += dt =>
+            {
+                var heroAgent = hero.GetAgent();
+                if (heroAgent == null) return;
+                foreach (var key in tracked.Keys.ToList())
+                {
+                    if (key == null || !key.IsActive()) { tracked.Remove(key); continue; }
+                    try
+                    {
+                        var dir = Vec3.Up;
+                        var blow = new Blow(heroAgent.Index)
+                        {
+                            AttackType = AgentAttackType.Standard, DamageType = DamageTypes.Pierce,
+                            BoneIndex = key.Monster.HeadLookDirectionBoneIndex, GlobalPosition = key.Position,
+                            BaseMagnitude = damagePerTick, InflictedDamage = damagePerTick,
+                            SwingDirection = dir, Direction = dir, DamageCalculated = true,
+                            VictimBodyPart = BoneBodyPartType.Chest,
+                        };
+                        // Dismount reuses the fork's own HitBehavior struct (same mechanism the
+                        // native AddDamagePower uses) rather than reinventing dismount handling.
+                        if (dismountChancePercent > 0f)
+                        {
+                            var hitBehavior = new HitBehavior { DismountChance = dismountChancePercent };
+                            blow.BlowFlag = hitBehavior.AddFlags(key, blow.BlowFlag);
+                        }
+                        key.RegisterBlow(blow, AgentHelpers.CreateCollisionDataFromBlow(heroAgent, key, blow));
+
+                        if (weaponDropChancePercent > 0f && MBRandom.RandomFloat * 100f < weaponDropChancePercent)
+                        {
+                            for (var wi = EquipmentIndex.WeaponItemBeginSlot; wi < EquipmentIndex.NumAllWeaponSlots; wi++)
+                            {
+                                if (!key.Equipment[wi].IsEmpty) { key.DropItem(wi); break; }
+                            }
+                        }
+                    }
+                    catch { }
+                    tracked[key]--;
+                    if (tracked[key] <= 0)
+                    {
+                        if (showContour) try { SafeSetContourColor(key, null, false); } catch { }
+                        tracked.Remove(key);
+                    }
+                }
+            };
+        }
+
+        public void Cleanup()
+        {
+            if (showContour)
+                foreach (var a in tracked.Keys) try { SafeSetContourColor(a, null, false); } catch { }
+            tracked.Clear();
+        }
+    }
+
+    // Wires a periodic radius sweep around the hero (aura pulse) onto the power-handler bus.
+    // Extracted verbatim from DamageAuraPower.OnActivation - same GetNearbyAgents sweep, same
+    // lastInRange contour diffing, same tick-interval gating - generalized with an onTickAgent
+    // callback so the composing power decides what happens to each agent caught in the sweep
+    // (deal damage, apply a slow, heal, etc.) instead of hardcoding "deal damage".
+    public class AuraSweepEffect
+    {
+        private readonly float radius;
+        private readonly float tickInterval;
+        private readonly int maxAgents;
+        private readonly bool targetEnemies;
+        private readonly bool includeSelf;
+        private readonly bool showContour;
+        private readonly uint contourColor;
+        private readonly Action<Agent, Agent> onTickAgent; // (heroAgent, targetAgent)
+        private readonly Action<Agent> onAgentEnter; // fires once when an agent first enters the sweep
+        private readonly Action<Agent> onAgentExit;  // fires once when an agent leaves the sweep (or the aura ends)
+        private float lastTick = -999f;
+        private readonly HashSet<Agent> lastInRange = new HashSet<Agent>();
+
+        // includeSelf only matters when targetEnemies is false (ally-targeting sweep) - matches
+        // the original HealAuraPower's "Heal Self" toggle, which this generalized helper dropped
+        // by defaulting to hero-excluded until this parameter was added back.
+        // onAgentEnter/onAgentExit are optional (default null) - only ComposedAuraPower's
+        // Buff/Debuff block uses them (to hand persistent per-agent state to
+        // ComposedAuraDamageTracker / BLTAgentModifierBehavior); every other caller (DoT, Heal,
+        // Slow) passes nothing and is unaffected.
+        public AuraSweepEffect(float radius, float tickInterval, int maxAgents, bool targetEnemies,
+            bool showContour, uint contourColor, Action<Agent, Agent> onTickAgent, bool includeSelf = true,
+            Action<Agent> onAgentEnter = null, Action<Agent> onAgentExit = null)
+        {
+            this.radius = radius;
+            this.tickInterval = tickInterval;
+            this.maxAgents = maxAgents;
+            this.targetEnemies = targetEnemies;
+            this.includeSelf = includeSelf;
+            this.showContour = showContour;
+            this.contourColor = contourColor;
+            this.onTickAgent = onTickAgent;
+            this.onAgentEnter = onAgentEnter;
+            this.onAgentExit = onAgentExit;
+        }
+
+        public void Wire(Hero hero, PowerHandler.Handlers handlers)
+        {
+            var nearbyBuffer = new MBList<Agent>();
+
+            handlers.OnSlowTick += dt =>
+            {
+                var heroAgent = hero.GetAgent();
+                if (heroAgent == null || !heroAgent.IsActive())
+                {
+                    foreach (var a in lastInRange)
+                    {
+                        try { SafeSetContourColor(a, null, false); } catch { }
+                        if (onAgentExit != null) try { onAgentExit(a); } catch { }
+                    }
+                    lastInRange.Clear();
+                    return;
+                }
+                float now = Mission.Current?.CurrentTime ?? 0f;
+                if (now - lastTick < tickInterval) return;
+                lastTick = now;
+                nearbyBuffer.Clear();
+                var nowInRange = new HashSet<Agent>(Mission.Current
+                    .GetNearbyAgents(heroAgent.Position.AsVec2, radius, nearbyBuffer)
+                    .Where(a => a.IsActive() && !a.IsMount
+                        && (targetEnemies ? a.IsEnemyOf(heroAgent) : (!a.IsEnemyOf(heroAgent) && (includeSelf || a != heroAgent))))
+                    .OrderBy(a => a.Position.Distance(heroAgent.Position))
+                    .Take(Math.Max(1, maxAgents)));
+
+                foreach (var a in lastInRange)
+                    if (!nowInRange.Contains(a))
+                    {
+                        try { SafeSetContourColor(a, null, false); } catch { }
+                        if (onAgentExit != null) try { onAgentExit(a); } catch { }
+                    }
+
+                if (onAgentEnter != null)
+                    foreach (var a in nowInRange)
+                        if (!lastInRange.Contains(a))
+                            try { onAgentEnter(a); } catch { }
+
+                if (showContour)
+                    foreach (var a in nowInRange) try { SafeSetContourColor(a, contourColor, true); } catch { }
+
+                foreach (var target in nowInRange)
+                {
+                    try { onTickAgent(heroAgent, target); } catch { }
+                }
+
+                lastInRange.Clear();
+                foreach (var a in nowInRange) lastInRange.Add(a);
+            };
+
+        }
+
+        public void Cleanup()
+        {
+            foreach (var a in lastInRange)
+            {
+                try { SafeSetContourColor(a, null, false); } catch { }
+                if (onAgentExit != null) try { onAgentExit(a); } catch { }
+            }
+            lastInRange.Clear();
+        }
+    }
+
+    // Three separate composed-power types (split from an earlier single "Composed Power (Beta)"
+    // that crammed DoT + Aura + self-buff into one 22-property power - exactly the "intimidating
+    // dropdown" problem this whole effort is meant to solve). Each is now its own, focused
+    // power-picker entry built from the helpers above; a class can pick MULTIPLE of these
+    // together to reproduce the old all-in-one combos (e.g. "Composed DoT" + "Composed Aura" on
+    // the same class = a DoT-and-aura hybrid). See
+    // docs/superpowers/plans/2026-07-17-uprising-of-the-peasants-composable-powers.md.
+
+    [DisplayName("Composed DoT (Beta)"),
+     Description("PILOT/BETA - on-hit damage-over-time (poison/bleed/burn-style), with optional weapon-drop and dismount chance per tick."),
+     UsedImplicitly]
+    public class ComposedDoTPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
+    {
+        [DisplayName("Damage Per Tick"), Description("Damage dealt each tick while affected."), PropertyOrder(1), UsedImplicitly]
+        public int DamagePerTick { get; set; } = 10;
+
+        [DisplayName("Duration (ticks)"), Description("How many ticks the effect lasts."), PropertyOrder(2), UsedImplicitly]
+        public int DurationTicks { get; set; } = 5;
+
+        [DisplayName("Apply On"), Description("Which kind of attacks trigger this effect (melee, ranged, or both)."), PropertyOrder(3), UsedImplicitly]
+        public PoisonApplyOn ApplyOn { get; set; } = PoisonApplyOn.Both;
+
+        [DisplayName("Show Contour"), Description("Highlights affected agents with a colored outline - visual only."), PropertyOrder(4), UsedImplicitly]
+        public bool ShowContour { get; set; } = true;
+
+        // EXPERIMENTAL: visual color picker instead of typing a hex code, using Xceed's
+        // PropertyGrid ColorEditor (binds to System.Windows.Media.Color). This is the first use
+        // of this editor/type anywhere in the project - every other power's contour color is a
+        // plain hex string. Trying it here first, isolated to one field, before touching the
+        // other ~35 contour-color fields across the file.
+        [DisplayName("Contour Color"), Description("Outline color shown on affected agents - visual only."),
+         Editor(typeof(ColorEditor), typeof(ColorEditor)), PropertyOrder(5), UsedImplicitly]
+        public WpfColor ContourColor { get; set; } = WpfColor.FromArgb(0xFF, 0x00, 0xCC, 0x00);
+
+        [DisplayName("Weapon Drop Chance (%)"), Description("Chance per tick that an affected agent drops their weapon. 0 = disabled."), PropertyOrder(6), UsedImplicitly]
+        public float WeaponDropChancePercent { get; set; } = 0f;
+
+        [DisplayName("Dismount Chance (%)"), Description("Chance per tick that an affected mounted agent is dismounted. 0 = disabled."), PropertyOrder(7), UsedImplicitly]
+        public float DismountChancePercent { get; set; } = 0f;
+
+        void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
+            => OnActivation(hero, handlers);
+
+        protected override void OnActivation(Hero hero, PowerHandler.Handlers handlers,
+            Agent agent = null, DeactivationHandler deactivationHandler = null)
+        {
+            uint color = (uint)((ContourColor.A << 24) | (ContourColor.R << 16) | (ContourColor.G << 8) | ContourColor.B);
+            int damagePerTick = PowerProgression.ScaleInt(this, hero, nameof(DamagePerTick), DamagePerTick);
+            int durationTicks = PowerProgression.ScaleInt(this, hero, nameof(DurationTicks), DurationTicks);
+            var dot = new DamageOverTimeEffect(damagePerTick, durationTicks, ApplyOn, ShowContour, color,
+                WeaponDropChancePercent, DismountChancePercent);
+            dot.Wire(hero, handlers);
+            if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => dot.Cleanup();
+            handlers.OnMissionOver += dot.Cleanup;
+        }
+
+        public override LocString Description =>
+            $"Composed DoT (Beta): {DamagePerTick} dmg/tick for {DurationTicks} ticks"
+            + $"{(WeaponDropChancePercent > 0 ? $", {WeaponDropChancePercent:0}% weapon drop" : "")}"
+            + $"{(DismountChancePercent > 0 ? $", {DismountChancePercent:0}% dismount" : "")}";
+    }
+
+    [DisplayName("Composed Aura (Beta)"),
+     Description("PILOT/BETA - periodic radius sweep: damage, optional slow, optional heal (target allies instead of enemies), optional weapon-drop/dismount chance per tick."),
+     UsedImplicitly]
+    public class ComposedAuraPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
+    {
+        [DisplayName("Damage Per Tick"), Description("Damage dealt to each agent caught in the sweep, per tick. 0 = no damage (useful if you only want the Slow/Heal)."), PropertyOrder(1), UsedImplicitly]
+        public int DamagePerTick { get; set; } = 8;
+
+        [DisplayName("Radius (meters)"), Description("How far from the hero this aura reaches."), PropertyOrder(2), UsedImplicitly]
+        public float Radius { get; set; } = 8f;
+
+        [DisplayName("Tick Interval (seconds)"), Description("How often the aura re-evaluates and re-applies."), PropertyOrder(3), UsedImplicitly]
+        public float TickIntervalSeconds { get; set; } = 3f;
+
+        [DisplayName("Max Agents Per Tick"), Description("Caps how many nearby agents this aura can hit per tick, closest first."), PropertyOrder(4), UsedImplicitly]
+        public int MaxAgentsPerTick { get; set; } = 5;
+
+        [DisplayName("Target Enemies"), Description("Checked = hits enemies (damage aura). Unchecked = hits allies (heal-style aura - pair with 0 damage and Slow off)."), PropertyOrder(5), UsedImplicitly]
+        public bool TargetEnemies { get; set; } = true;
+
+        [DisplayName("Show Contour"), Description("Highlights agents caught in the aura - visual only."), PropertyOrder(6), UsedImplicitly]
+        public bool ShowContour { get; set; } = true;
+
+        [DisplayName("Contour Color"), Description("Outline color shown on agents caught in the aura - visual only."),
+         Editor(typeof(ColorEditor), typeof(ColorEditor)), PropertyOrder(7), UsedImplicitly]
+        public WpfColor ContourColor { get; set; } = WpfColor.FromArgb(0xFF, 0xFF, 0x22, 0x00);
+
+        [DisplayName("Slow Enabled"), Description("If on, agents caught in the aura also have their movement speed capped (combine with damage for a Blizzard-style combo)."), PropertyOrder(8), UsedImplicitly]
+        public bool SlowEnabled { get; set; } = false;
+
+        [DisplayName("Slow Speed Limit"), Description("Maximum movement speed fraction (0-1) while inside the aura - lower is a stronger slow."), PropertyOrder(9), UsedImplicitly]
+        public float SlowSpeedLimit { get; set; } = 0.5f;
+
+        [DisplayName("Heal Per Tick"), Description("HP restored to each agent caught in the aura, per tick. Only makes sense with Target Enemies OFF (heal allies). 0 = disabled."), PropertyOrder(10), UsedImplicitly]
+        public float HealPerTick { get; set; } = 0f;
+
+        [DisplayName("Include Self"), Description("Only matters with Target Enemies OFF: whether the hero's own agent is included as a target of this aura (e.g. so a heal aura also heals the caster). ON by default, matching the original Heal Aura's 'Heal Self' behavior."), PropertyOrder(11), UsedImplicitly]
+        public bool IncludeSelf { get; set; } = true;
+
+        [DisplayName("Weapon Drop Chance (%)"), Description("Chance per tick that each agent caught in the aura drops their weapon. 0 = disabled."), PropertyOrder(12), UsedImplicitly]
+        public float WeaponDropChancePercent { get; set; } = 0f;
+
+        [DisplayName("Dismount Chance (%)"), Description("Chance per tick that each mounted agent caught in the aura is dismounted. 0 = disabled."), PropertyOrder(13), UsedImplicitly]
+        public float DismountChancePercent { get; set; } = 0f;
+
+        [DisplayName("Buff: Target Damage Bonus (%)"), Description("Percentage bonus/penalty applied to outgoing damage of every agent caught in the aura, for as long as they stay in it. Positive = buff, negative = debuff. Works on enemies, allies, and regular troops (not just other adopted heroes). 0 = disabled."), PropertyOrder(14), UsedImplicitly]
+        public float TargetDamageBonusPercent { get; set; } = 0f;
+
+        [DisplayName("Buff: Target Armor Bonus (%)"), Description("Percentage bonus/penalty applied to armor (head/torso/arms/legs) of every agent caught in the aura, for as long as they stay in it. Positive = buff, negative = debuff. Works on enemies, allies, and regular troops. 0 = disabled."), PropertyOrder(15), UsedImplicitly]
+        public float TargetArmorBonusPercent { get; set; } = 0f;
+
+        void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
+            => OnActivation(hero, handlers);
+
+        protected override void OnActivation(Hero hero, PowerHandler.Handlers handlers,
+            Agent agent = null, DeactivationHandler deactivationHandler = null)
+        {
+            uint color = (uint)((ContourColor.A << 24) | (ContourColor.R << 16) | (ContourColor.G << 8) | ContourColor.B);
+            int damagePerTick = PowerProgression.ScaleInt(this, hero, nameof(DamagePerTick), DamagePerTick);
+            float radius      = PowerProgression.ScaleFloat(this, hero, nameof(Radius), Radius);
+            int maxAgents     = PowerProgression.ScaleInt(this, hero, nameof(MaxAgentsPerTick), MaxAgentsPerTick);
+            bool slowEnabled = SlowEnabled;
+            float slowLimit = SlowSpeedLimit;
+            float healPerTick = PowerProgression.ScaleFloat(this, hero, nameof(HealPerTick), HealPerTick);
+            float weaponDropChancePercent = WeaponDropChancePercent;
+            float dismountChancePercent = DismountChancePercent;
+            float targetDamageBonusPercent = TargetDamageBonusPercent;
+            float targetArmorBonusPercent = TargetArmorBonusPercent;
+            var armorConfigs = new Dictionary<Agent, AgentModifierConfig>();
+
+            void OnAgentEnter(Agent target)
+            {
+                if (targetDamageBonusPercent != 0f)
+                    ComposedAuraDamageTracker.Set(target, targetDamageBonusPercent);
+                if (targetArmorBonusPercent != 0f)
+                {
+                    var config = new AgentModifierConfig();
+                    float armorMult = 100f + targetArmorBonusPercent;
+                    config.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.ArmorHead, ModifierPercent = armorMult });
+                    config.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.ArmorTorso, ModifierPercent = armorMult });
+                    config.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.ArmorArms, ModifierPercent = armorMult });
+                    config.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.ArmorLegs, ModifierPercent = armorMult });
+                    armorConfigs[target] = config;
+                    BLTAgentModifierBehavior.Current?.Add(target, config);
+                }
+            }
+
+            void OnAgentExit(Agent target)
+            {
+                if (targetDamageBonusPercent != 0f)
+                    ComposedAuraDamageTracker.Remove(target);
+                if (armorConfigs.TryGetValue(target, out var config))
+                {
+                    BLTAgentModifierBehavior.Current?.Remove(target, config);
+                    armorConfigs.Remove(target);
+                }
+            }
+
+            void OnAuraTick(Agent heroAgent, Agent target)
+            {
+                if (healPerTick > 0f)
+                    try { target.Health = Math.Min(target.Health + healPerTick, target.HealthLimit); } catch { }
+                if (slowEnabled)
+                    try { target.SetMaximumSpeedLimit(slowLimit, false); } catch { }
+                if (damagePerTick > 0)
+                {
+                    try
+                    {
+                        var dir = Vec3.Up;
+                        var blow = new Blow(heroAgent.Index)
+                        {
+                            AttackType = AgentAttackType.Standard, DamageType = DamageTypes.Pierce,
+                            BoneIndex = target.Monster.HeadLookDirectionBoneIndex, GlobalPosition = target.Position,
+                            BaseMagnitude = damagePerTick, InflictedDamage = damagePerTick,
+                            SwingDirection = dir, Direction = dir, DamageCalculated = true,
+                            VictimBodyPart = BoneBodyPartType.Chest,
+                        };
+                        if (dismountChancePercent > 0f)
+                        {
+                            var hitBehavior = new HitBehavior { DismountChance = dismountChancePercent };
+                            blow.BlowFlag = hitBehavior.AddFlags(target, blow.BlowFlag);
+                        }
+                        target.RegisterBlow(blow, AgentHelpers.CreateCollisionDataFromBlow(heroAgent, target, blow));
+                    }
+                    catch { }
+                }
+                if (weaponDropChancePercent > 0f && MBRandom.RandomFloat * 100f < weaponDropChancePercent)
+                {
+                    try
+                    {
+                        for (var wi = EquipmentIndex.WeaponItemBeginSlot; wi < EquipmentIndex.NumAllWeaponSlots; wi++)
+                        {
+                            if (!target.Equipment[wi].IsEmpty) { target.DropItem(wi); break; }
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            var aura = new AuraSweepEffect(radius, TickIntervalSeconds, maxAgents, TargetEnemies,
+                ShowContour, color, OnAuraTick, IncludeSelf, OnAgentEnter, OnAgentExit);
+            aura.Wire(hero, handlers);
+            if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => aura.Cleanup();
+            handlers.OnMissionOver += aura.Cleanup;
+            if (targetDamageBonusPercent != 0f) handlers.OnMissionOver += ComposedAuraDamageTracker.Clear;
+        }
+
+        public override LocString Description =>
+            $"Composed Aura (Beta): {DamagePerTick}/tick r{Radius:0}m"
+            + $"{(SlowEnabled ? $" (slow {SlowSpeedLimit:0.##}x)" : "")}"
+            + $"{(HealPerTick > 0 ? $" (heal {HealPerTick:0}/tick)" : "")}"
+            + $"{(TargetDamageBonusPercent != 0 ? $" (dmg buff {TargetDamageBonusPercent:0}%)" : "")}"
+            + $"{(TargetArmorBonusPercent != 0 ? $" (armor buff {TargetArmorBonusPercent:0}%)" : "")}";
+    }
+
+    // Always = the original constant version. HpScaling reproduces Berserk (bonus grows smoothly
+    // the lower HP gets, active continuously below the threshold). HpThreshold reproduces Last
+    // Stand (fires once HP drops below the threshold, applies a flat bonus for a fixed duration).
+    public enum SelfBuffTriggerMode { Always, HpScaling, HpThreshold }
+
+    [DisplayName("Composed Self-Buff (Beta)"),
+     Description("PILOT/BETA - self damage bonus/reduction. Trigger Mode picks the activation style: Always (constant), HP Scaling (Berserk-style - grows as HP drops), HP Threshold (Last Stand-style - fires once below a threshold for a fixed duration). PERSONAL ONLY: the power-handler bus a composed power runs on is scoped to the hero that owns it, so this cannot buff allies or debuff enemies (that needs different infrastructure, not yet built - see the plan doc)."),
+     UsedImplicitly]
+    public class ComposedSelfBuffPower : DurationMissionHeroPowerDefBase, IHeroPowerPassive
+    {
+        [DisplayName("Damage Bonus (%)"), Description("Percentage bonus added to this hero's own outgoing damage. Always: flat. HP Scaling: value reached at 0 HP, scales down to 0 at the threshold. HP Threshold: flat bonus while triggered."), PropertyOrder(1), UsedImplicitly]
+        public float DamageBonusPercent { get; set; } = 0f;
+
+        [DisplayName("Damage Reduction (%)"), Description("Percentage reduction applied to damage this hero takes. Same scaling rules per Trigger Mode as Damage Bonus."), PropertyOrder(2), UsedImplicitly]
+        public float DamageReductionPercent { get; set; } = 0f;
+
+        [DisplayName("Trigger Mode"), Description("Always = constant. HP Scaling = Berserk-style (grows as HP drops below Threshold HP %). HP Threshold = Last Stand-style (fires once below Threshold HP %, lasts Duration Seconds)."), PropertyOrder(3), UsedImplicitly]
+        public SelfBuffTriggerMode TriggerMode { get; set; } = SelfBuffTriggerMode.Always;
+
+        [DisplayName("Threshold HP (%)"), Description("Used by HP Scaling and HP Threshold modes: the HP percent below which the effect starts (HP Scaling) or triggers (HP Threshold). Ignored in Always mode."), PropertyOrder(4), UsedImplicitly]
+        public float ThresholdHpPercent { get; set; } = 50f;
+
+        [DisplayName("Duration (seconds)"), Description("HP Threshold mode only: how long the buff lasts once triggered."), PropertyOrder(5), UsedImplicitly]
+        public float DurationSeconds { get; set; } = 10f;
+
+        [DisplayName("Once Per Battle"), Description("HP Threshold mode only: whether this can only trigger once per battle."), PropertyOrder(6), UsedImplicitly]
+        public bool OncePerBattle { get; set; } = true;
+
+        [DisplayName("Show Contour"), Description("HP Scaling / HP Threshold modes only: highlights the hero with a colored outline while the effect is active - visual only."), PropertyOrder(7), UsedImplicitly]
+        public bool ShowContour { get; set; } = true;
+
+        [DisplayName("Contour Color"), Description("Outline color shown on the hero while the effect is active - visual only."),
+         Editor(typeof(ColorEditor), typeof(ColorEditor)), PropertyOrder(8), UsedImplicitly]
+        public WpfColor ContourColor { get; set; } = WpfColor.FromArgb(0xFF, 0x8B, 0x00, 0x00);
+
+        void IHeroPowerPassive.OnHeroJoinedBattle(Hero hero, PowerHandler.Handlers handlers)
+            => OnActivation(hero, handlers);
+
+        protected override void OnActivation(Hero hero, PowerHandler.Handlers handlers,
+            Agent agent = null, DeactivationHandler deactivationHandler = null)
+        {
+            float damageBonusPercent = PowerProgression.ScaleFloat(this, hero, nameof(DamageBonusPercent), DamageBonusPercent);
+            float damageReductionPercent = PowerProgression.ScaleFloat(this, hero, nameof(DamageReductionPercent), DamageReductionPercent);
+            uint color = (uint)((ContourColor.A << 24) | (ContourColor.R << 16) | (ContourColor.G << 8) | ContourColor.B);
+
+            if (TriggerMode == SelfBuffTriggerMode.Always)
+            {
+                if (damageBonusPercent != 0f)
+                {
+                    handlers.OnDoDamage += (attacker, victim, blowParams) =>
+                    {
+                        blowParams.blow.InflictedDamage = (int)(blowParams.blow.InflictedDamage * (1f + damageBonusPercent / 100f));
+                    };
+                }
+                if (damageReductionPercent != 0f)
+                {
+                    handlers.OnTakeDamage += (victim, attacker, blowParams) =>
+                    {
+                        blowParams.blow.InflictedDamage = (int)(blowParams.blow.InflictedDamage * (1f - damageReductionPercent / 100f));
+                    };
+                }
+                return;
+            }
+
+            if (TriggerMode == SelfBuffTriggerMode.HpScaling)
+            {
+                // Berserk-style: bonus/reduction ramps up smoothly the further HP drops below the
+                // threshold, reaching the configured percent at 0 HP. Extracted pattern from
+                // BerserkPower.OnActivation above, generalized to also scale incoming-damage
+                // reduction (the original only scaled outgoing damage).
+                float threshold = ThresholdHpPercent / 100f;
+                Agent trackedAgent = null;
+                bool active = false;
+
+                handlers.OnDoDamage += (attacker, victim, blowParams) =>
+                {
+                    if (attacker == null || attacker.HealthLimit <= 0) return;
+                    var current = hero.GetAgent();
+                    if (current != null && current != trackedAgent)
+                    {
+                        if (active && ShowContour) try { SafeSetContourColor(trackedAgent, null, false); } catch { }
+                        trackedAgent = current;
+                        active = false;
+                    }
+                    float hpRatio = attacker.Health / attacker.HealthLimit;
+                    if (hpRatio >= threshold)
+                    {
+                        if (active && ShowContour) try { SafeSetContourColor(attacker, null, false); } catch { }
+                        active = false;
+                        return;
+                    }
+                    if (!active)
+                    {
+                        active = true;
+                        if (ShowContour) try { SafeSetContourColor(attacker, color, true); } catch { }
+                    }
+                    if (damageBonusPercent != 0f)
+                    {
+                        float scaleRatio = 1f - (hpRatio / threshold);
+                        blowParams.blow.InflictedDamage = (int)(blowParams.blow.InflictedDamage * (1f + (damageBonusPercent / 100f) * scaleRatio));
+                    }
+                };
+
+                if (damageReductionPercent != 0f)
+                {
+                    handlers.OnTakeDamage += (victim, attacker, blowParams) =>
+                    {
+                        if (victim == null || victim.HealthLimit <= 0) return;
+                        float hpRatio = victim.Health / victim.HealthLimit;
+                        if (hpRatio >= threshold) return;
+                        float scaleRatio = 1f - (hpRatio / threshold);
+                        blowParams.blow.InflictedDamage = (int)(blowParams.blow.InflictedDamage * (1f - (damageReductionPercent / 100f) * scaleRatio));
+                    };
+                }
+
+                void CleanupScaling()
+                {
+                    if (active && ShowContour) try { SafeSetContourColor(trackedAgent, null, false); } catch { }
+                    active = false;
+                }
+                if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => CleanupScaling();
+                handlers.OnMissionOver += CleanupScaling;
+                return;
+            }
+
+            // HpThreshold: Last Stand-style. Extracted pattern from LastStandPower.OnActivation
+            // above - fires once HP would drop below the threshold, flat bonus/reduction for a
+            // fixed window, optionally once per battle.
+            {
+                float triggerHpPercent = ThresholdHpPercent;
+                float durationSeconds = DurationSeconds;
+                Agent trackedAgent = null;
+                bool triggered = false;
+                float expiryTime = 0f;
+
+                void CheckReset()
+                {
+                    var cur = hero.GetAgent();
+                    if (cur != null && cur != trackedAgent)
+                    {
+                        if (triggered && ShowContour) try { SafeSetContourColor(trackedAgent, null, false); } catch { }
+                        trackedAgent = cur;
+                        triggered = false;
+                        expiryTime = 0f;
+                    }
+                }
+
+                handlers.OnTakeDamage += (victim, attacker, blowParams) =>
+                {
+                    CheckReset();
+                    if (triggered && OncePerBattle) return;
+                    if (victim.HealthLimit <= 0) return;
+                    float newHp = victim.Health - blowParams.blow.InflictedDamage;
+                    if (newHp > victim.HealthLimit * triggerHpPercent / 100f) return;
+                    triggered = true;
+                    expiryTime = (Mission.Current?.CurrentTime ?? 0f) + durationSeconds;
+                    if (ShowContour)
+                        try { SafeSetContourColor(victim, color, true); } catch { }
+                };
+
+                handlers.OnDoDamage += (attacker, victim, blowParams) =>
+                {
+                    if (!triggered) return;
+                    float now = Mission.Current?.CurrentTime ?? 0f;
+                    if (now > expiryTime)
+                    {
+                        if (ShowContour) try { SafeSetContourColor(attacker, null, false); } catch { }
+                        return;
+                    }
+                    if (damageBonusPercent != 0f)
+                        blowParams.blow.InflictedDamage = (int)(blowParams.blow.InflictedDamage * (1f + damageBonusPercent / 100f));
+                };
+
+                handlers.OnTakeDamage += (victim, attacker, blowParams) =>
+                {
+                    if (!triggered) return;
+                    if ((Mission.Current?.CurrentTime ?? 0f) > expiryTime) return;
+                    if (damageReductionPercent != 0f)
+                        blowParams.blow.InflictedDamage = (int)(blowParams.blow.InflictedDamage * (1f - damageReductionPercent / 100f));
+                };
+
+                void CleanupThreshold()
+                {
+                    if (triggered && ShowContour) try { SafeSetContourColor(trackedAgent, null, false); } catch { }
+                    triggered = false;
+                }
+                if (deactivationHandler != null) deactivationHandler.OnDeactivate += _ => CleanupThreshold();
+                handlers.OnMissionOver += CleanupThreshold;
+            }
+        }
+
+        public override LocString Description =>
+            $"Composed Self-Buff (Beta): +{DamageBonusPercent:0}% dmg, -{DamageReductionPercent:0}% taken";
     }
 
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -5198,6 +7111,7 @@ public class BLTAurasModule : MBSubModuleBase
                     if (victimAgent == null || agentState != AgentState.Killed) return;
                     if (!(victimAgent.Character is CharacterObject victimChar)) return;
                     if (victimChar.HeroObject != null) return; // never a real hero (BLT-adopted or otherwise)
+                    if (BLTWandererBehavior.IsWandererStringId(victimChar.StringId)) return; // never someone's wanderer
 
                     raisedAgents.RemoveWhere(a => a == null || !a.IsActive());
                     if (raisedAgents.Count + pending.Count >= maxActive) return;
@@ -6034,6 +7948,45 @@ public class BLTAurasModule : MBSubModuleBase
     }
 
     // ════════════════════════════════════════════════════════════════════
+    //  ADOPT CULTURE RESTRICTION — config
+    // ════════════════════════════════════════════════════════════════════
+
+    [DisplayName("MBGA - Culture Restriction")]
+    public class AdoptCultureRestrictionGlobalConfig
+    {
+        private const string ID = "MBGA - Culture Restriction";
+        internal static void Register() => ActionManager.RegisterGlobalConfigType(ID, typeof(AdoptCultureRestrictionGlobalConfig));
+        internal static AdoptCultureRestrictionGlobalConfig Get() => ActionManager.GetGlobalConfig<AdoptCultureRestrictionGlobalConfig>(ID);
+
+        [DisplayName("Enabled"),
+         Description("Restrict which cultures can be adopted via the adopt-by-culture command. When off, all cultures are available (default BLT behavior)."),
+         UsedImplicitly]
+        public bool Enabled { get; set; } = false;
+
+        [DisplayName("Allowed Cultures"),
+         Description("List of culture names or string ids that viewers are allowed to adopt (e.g. Empire, Vlandia). Case-insensitive."),
+         UsedImplicitly]
+        public List<string> AllowedCultures { get; set; } = new List<string>();
+
+        public bool IsAllowed(CultureObject culture)
+        {
+            if (culture == null || AllowedCultures == null) return false;
+            string name = culture.Name?.ToString()?.Trim();
+            string sid  = culture.StringId?.Trim();
+            return AllowedCultures.Any(a =>
+            {
+                var t = a?.Trim();
+                return !string.IsNullOrEmpty(t) &&
+                    (string.Equals(t, name, StringComparison.OrdinalIgnoreCase)
+                     || string.Equals(t, sid, StringComparison.OrdinalIgnoreCase));
+            });
+        }
+
+        public string AllowedDisplay()
+            => string.Join(", ", CampaignHelpers.MainCultures.Where(IsAllowed).Select(c => c.Name.ToString()));
+    }
+
+    // ════════════════════════════════════════════════════════════════════
     //  BANNER SANITIZER — fix Warsails banner crash (no-Warsails setups)
     // ════════════════════════════════════════════════════════════════════
 
@@ -6043,6 +7996,10 @@ public class BLTAurasModule : MBSubModuleBase
         {
             CampaignEvents.OnGameLoadFinishedEvent.AddNonSerializedListener(this, Sanitize);
             CampaignEvents.OnSessionLaunchedEvent.AddNonSerializedListener(this, _ => Sanitize());
+            // Also re-sanitize hourly: banners can appear/change mid-play (new clans, mod-spawned
+            // heroes) after load/session-launch already ran, and a malformed one causes a native NRE
+            // in ApplyBannerTextureToMesh (the colleague's !summon banner crash). Cheap periodic sweep.
+            CampaignEvents.HourlyTickEvent.AddNonSerializedListener(this, Sanitize);
         }
 
         public override void SyncData(IDataStore dataStore) { }
@@ -6109,6 +8066,64 @@ public class BLTAurasModule : MBSubModuleBase
     }
 
     // ════════════════════════════════════════════════════════════════════
+    //  ADOPT CULTURE RESTRICTION — Harmony prefix (aplikowany ręcznie raz)
+    // ════════════════════════════════════════════════════════════════════
+
+    internal static class AdoptCultureRestrictionPatch
+    {
+        internal static System.Reflection.MethodBase TargetMethod()
+        {
+            var type = typeof(BLTAdoptAHeroCampaignBehavior).Assembly.GetTypes()
+                .FirstOrDefault(t => t.Name == "AdoptAHero");
+            return type?.GetMethod("ExecuteInternal",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        }
+
+        internal static bool Prefix(object settings, string contextArgs, ref ValueTuple<bool, string> __result)
+        {
+            try
+            {
+                var cfg = AdoptCultureRestrictionGlobalConfig.Get();
+                if (cfg == null || !cfg.Enabled || cfg.AllowedCultures == null || cfg.AllowedCultures.Count == 0)
+                    return true;
+
+                var vsProp = settings?.GetType().GetProperty("ViewerSelects");
+                var vsVal = vsProp?.GetValue(settings);
+                if (vsVal == null || vsVal.ToString() != "Culture")
+                    return true;
+
+                string allowedDisplay = cfg.AllowedDisplay();
+                string arg = (contextArgs ?? "").Trim();
+
+                if (arg.Length <= 1 || string.Equals(arg, "list", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(arg, "a", StringComparison.OrdinalIgnoreCase))
+                {
+                    __result = (false, $"Available cultures: {allowedDisplay}");
+                    return false;
+                }
+
+                var match = CampaignHelpers.MainCultures
+                    .Where(cfg.IsAllowed)
+                    .FirstOrDefault(c => c.Name.ToString().StartsWith(arg, StringComparison.CurrentCultureIgnoreCase));
+                if (match != null)
+                    return true;
+
+                var exists = CampaignHelpers.MainCultures
+                    .FirstOrDefault(c => c.Name.ToString().StartsWith(arg, StringComparison.CurrentCultureIgnoreCase));
+                __result = exists != null
+                    ? (false, $"Culture '{exists.Name}' is not allowed. Available cultures: {allowedDisplay}")
+                    : (false, $"No culture starting with '{arg}' found. Available cultures: {allowedDisplay}");
+                return false;
+            }
+            catch (Exception e)
+            {
+                Log.Exception("[CultureRestrict] Prefix", e);
+                return true;
+            }
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
     //  HUMAN CHILDREN — anti-crash dla nie-ludzkich ras (The Old Realm)
     //  Każde nowonarodzone dziecko wymuszane na rasę ludzką (model dziecka).
     // ════════════════════════════════════════════════════════════════════
@@ -6132,106 +8147,147 @@ public class BLTAurasModule : MBSubModuleBase
         }
     }
 
-    // ════════════════════════════════════════════════════════════════════════════
-    // ADOPT BY TOR — !adoptbytor <culture> <subtype>
-    // Lets a viewer pick a SPECIFIC The Old Realms wanderer archetype (e.g. Greenskins
-    // Shaman, Vampire Counts Necromancer) instead of a random one, using the same
-    // adoption finalization as the normal !adopt flow (InitAdoptedHero).
-    // ════════════════════════════════════════════════════════════════════════════
-    [LocDescription("Adopts a hero using a specific The Old Realms archetype (culture + subtype) instead of a random one, e.g. a Greenskins Shaman or Vampire Counts Necromancer. Usage: !adoptbytor <culture> <subtype>")]
-    public class AdoptByTorCommand : ICommandHandler
-    {
-        public class Settings { }
-        public Type HandlerConfigType => typeof(Settings);
+    // ════════════════════════════════════════════════════════════════════
+    //  EQUIP FROM HERO CULTURE (TOR) — config + Harmony prefix
+    //  Bohater dostaje sprzet TYLKO z wlasnej kultury (nigdy obcej).
+    // ════════════════════════════════════════════════════════════════════
 
-        // Friendly TOR culture name -> underlying (reskinned) Bannerlord culture StringId.
-        private static readonly (string Friendly, string CultureId)[] TorCultures =
+    [DisplayName("MBGA - Equip From Culture")]
+    public class EquipCultureGlobalConfig
+    {
+        private const string ID = "MBGA - Equip From Culture";
+        internal static void Register() => ActionManager.RegisterGlobalConfigType(ID, typeof(EquipCultureGlobalConfig));
+        internal static EquipCultureGlobalConfig Get() => ActionManager.GetGlobalConfig<EquipCultureGlobalConfig>(ID);
+
+        [DisplayName("Enabled"),
+         Description("Adopted heroes only get equipment from their own culture (for total-conversion mods like The Old Realms where every item is culture-tagged). If the culture has no item for a slot, the nearest tier of the SAME culture is used, or the slot stays empty. Leave OFF for vanilla (most vanilla items have no culture and heroes would end up unarmed)."),
+         UsedImplicitly]
+        public bool Enabled { get; set; } = false;
+    }
+
+    public class WandererRecord
+    {
+        public string OwnerName { get; set; }     // owner viewer name (hero.FirstName.Raw())
+        public string HeroStringId { get; set; }  // real Hero backing this wanderer - resolved live, never serialized as an object
+        public string Power { get; set; }         // WandererPowerCatalog.Def.Id - rolled once at hire time, kept for the wanderer's lifetime
+        public int Kills { get; set; }            // lifetime kills by this wanderer (self-progression, independent of owner)
+        public int Battles { get; set; }          // lifetime battles this wanderer has fought in
+        public int Tier { get; set; } = 1;        // 1-8, recomputed from Kills/Battles after each battle; drives own equipment + power scaling
+    }
+
+    // Small hand-rolled power set for wanderers. Deliberately NOT the same 34-power system used by
+    // adopted heroes (that one is gated on Hero.IsAdopted(), which wanderers never satisfy, and its
+    // dispatch runs on every hit/kill in the whole mission - too risky to touch for this). Instead
+    // these reuse AgentModifierConfig/BLTAgentModifierBehavior/BLTTimedBuffBehavior directly, which
+    // are already Agent-keyed (see CommanderAura/BuffReward above), so no core system changes needed.
+    public static class WandererPowerCatalog
+    {
+        public struct Def { public string Id; public string Display; public string Desc; }
+
+        public static readonly Def[] All =
         {
-            ("Empire", "empire"),
-            ("Bretonnia", "vlandia"),
-            ("Mousillon", "mousillon"),
-            ("Vampire Counts", "khuzait"),
-            ("Wood Elves", "battania"),
-            ("Eonir", "eonir"),
-            ("Dwarfs", "sturgia"),
-            ("Greenskins", "aserai"),
-            ("Chaos", "chaos_culture"),
+            new Def { Id = "IronSkin", Display = "Iron Skin", Desc = "+25% head armor (permanent)" },
+            new Def { Id = "SwiftHunter", Display = "Swift Hunter", Desc = "+20% movement speed (permanent)" },
+            new Def { Id = "Vampirism", Display = "Vampirism", Desc = "heals 20% max HP on each kill" },
+            new Def { Id = "Bloodrage", Display = "Bloodrage", Desc = "+30% attack speed for 8s after each kill" },
+            new Def { Id = "SecondWind", Display = "Second Wind", Desc = "once per battle: heals to 60% HP + speed burst when HP first drops to 25%" },
+            new Def { Id = "Berserk", Display = "Berserk", Desc = "+40% attack & move speed while HP is at or below 50%" },
+            new Def { Id = "BattleCry", Display = "Battle Cry", Desc = "every 25s: +25% attack & move speed for 6s" },
+            new Def { Id = "Juggernaut", Display = "Juggernaut", Desc = "regenerates 0.5 HP/s (permanent)" },
         };
 
-        public void Execute(ReplyContext context, object config)
+        public static Def Pick() => All[MBRandom.RandomInt(All.Length)];
+
+        public static Def? Get(string id)
         {
-            var args = (context.Args ?? "").Trim().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            if (string.IsNullOrEmpty(id)) return null;
+            foreach (var d in All) if (d.Id == id) return d;
+            return null;
+        }
+    }
 
-            if (args.Length == 0 || args[0].Equals("list", StringComparison.OrdinalIgnoreCase))
+    public class BLTWandererBehavior : CampaignBehaviorBase
+    {
+        public static BLTWandererBehavior Current => Campaign.Current?.GetCampaignBehavior<BLTWandererBehavior>();
+
+        private Dictionary<string, List<WandererRecord>> wanderers = new Dictionary<string, List<WandererRecord>>();
+
+        public override void RegisterEvents() { }
+
+        public override void SyncData(IDataStore dataStore)
+        {
+            // Only lightweight metadata (owner name + Hero StringId) is persisted here - the actual
+            // Hero object (stats/skills/equipment) is saved natively by the campaign itself, since
+            // it's a real registered Hero, not a fake mirror.
+            string json = dataStore.IsSaving
+                ? Newtonsoft.Json.JsonConvert.SerializeObject(wanderers ?? new Dictionary<string, List<WandererRecord>>())
+                : null;
+            dataStore.SyncData("BLTWanderersJson", ref json);
+            if (!dataStore.IsSaving)
             {
-                ActionManager.SendReply(context, "TOR cultures: " + string.Join(", ", TorCultures.Select(c => c.Friendly))
-                    + ". Usage: !adoptbytor <culture> list | !adoptbytor <culture> <archetype>");
-                return;
+                wanderers = string.IsNullOrEmpty(json)
+                    ? new Dictionary<string, List<WandererRecord>>()
+                    : (Newtonsoft.Json.JsonConvert.DeserializeObject<Dictionary<string, List<WandererRecord>>>(json)
+                       ?? new Dictionary<string, List<WandererRecord>>());
             }
+            if (wanderers == null) wanderers = new Dictionary<string, List<WandererRecord>>();
+        }
 
-            string cultureQuery = args[0];
-            var cultureMatch = TorCultures.FirstOrDefault(c =>
-                c.Friendly.IndexOf(cultureQuery, StringComparison.OrdinalIgnoreCase) >= 0);
-            if (cultureMatch.CultureId == null)
+        public List<WandererRecord> GetRecords(string ownerName)
+        {
+            if (string.IsNullOrEmpty(ownerName)) return new List<WandererRecord>();
+            if (!wanderers.TryGetValue(ownerName, out var list)) { list = new List<WandererRecord>(); wanderers[ownerName] = list; }
+            return list;
+        }
+
+        public static Hero ResolveHero(WandererRecord rec)
+            => string.IsNullOrEmpty(rec?.HeroStringId) ? null : CampaignHelpers.AllHeroes.FirstOrDefault(h => h.StringId == rec.HeroStringId);
+
+        public List<(WandererRecord Record, Hero Hero)> GetWanderers(string ownerName)
+            => GetRecords(ownerName).Select(r => (r, ResolveHero(r))).Where(x => x.Item2 != null).ToList();
+
+        // Finds a wanderer's record by its backing Hero's StringId, regardless of which owner it
+        // belongs to - used by power-magnitude scaling, which only has the wanderer's own Agent/Hero
+        // to work with, not the owner key.
+        public WandererRecord FindRecordByHeroStringId(string heroStringId)
+        {
+            if (string.IsNullOrEmpty(heroStringId)) return null;
+            foreach (var list in wanderers.Values)
             {
-                ActionManager.SendReply(context, $"Unknown TOR culture '{cultureQuery}'. Use !adoptbytor list to see options.");
-                return;
+                var match = list?.FirstOrDefault(r => r.HeroStringId == heroStringId);
+                if (match != null) return match;
             }
+            return null;
+        }
 
-            var templates = CampaignHelpers.AllWandererTemplates
-                .Where(c => string.Equals(c.Culture?.StringId, cultureMatch.CultureId, StringComparison.OrdinalIgnoreCase)
-                            && c.StringId?.StartsWith("tor_wanderer_", StringComparison.OrdinalIgnoreCase) == true)
-                .ToList();
+        public WandererRecord Add(string ownerName, Hero hero)
+        {
+            var rec = new WandererRecord { OwnerName = ownerName, HeroStringId = hero.StringId };
+            GetRecords(ownerName).Add(rec);
+            return rec;
+        }
 
-            if (templates.Count == 0)
-            {
-                ActionManager.SendReply(context, $"No TOR wanderer archetypes found for {cultureMatch.Friendly} (mod not loaded?).");
-                return;
-            }
+        public bool Remove(string ownerName, WandererRecord rec) => GetRecords(ownerName).Remove(rec);
 
-            if (args.Length < 2 || args[1].Equals("list", StringComparison.OrdinalIgnoreCase))
-            {
-                string names = string.Join(", ", templates.Select(t => t.Name?.ToString() ?? t.StringId));
-                ActionManager.SendReply(context, $"{cultureMatch.Friendly} archetypes: {names}");
-                return;
-            }
-
-            string archetypeQuery = string.Join(" ", args.Skip(1));
-            var template = templates.FirstOrDefault(t =>
-                (t.Name?.ToString() ?? "").IndexOf(archetypeQuery, StringComparison.OrdinalIgnoreCase) >= 0
-                || (t.StringId ?? "").IndexOf(archetypeQuery, StringComparison.OrdinalIgnoreCase) >= 0);
-            if (template == null)
-            {
-                ActionManager.SendReply(context, $"No {cultureMatch.Friendly} archetype matches '{archetypeQuery}'. Use !adoptbytor {cultureMatch.Friendly} list to see options.");
-                return;
-            }
-
-            var existing = BLTAdoptAHeroCampaignBehavior.Current?.GetAdoptedHero(context.UserName);
-            if (existing != null)
-            {
-                ActionManager.SendReply(context, $"You already have an adopted hero ({existing.Name}). Retire them first (!retire) before adopting a new one.");
-                return;
-            }
-
+        public int WandererCountFor(Hero hero)
+        {
             try
             {
-                var newHero = HeroCreator.CreateSpecialHero(template);
-                newHero.ChangeState(Hero.CharacterStates.Active);
-                var targetSettlement = TaleWorlds.CampaignSystem.Settlements.Settlement.All.Where(s => s.IsTown).SelectRandom();
-                if (targetSettlement != null) EnterSettlementAction.ApplyForCharacterOnly(newHero, targetSettlement);
-
-                if (newHero.GetSkillValue(CampaignHelpers.AllSkillObjects.First()) == 0)
-                    newHero.HeroDeveloper.SetInitialSkillLevel(CampaignHelpers.AllSkillObjects.First(), 1);
-
-                BLTAdoptAHeroCampaignBehavior.Current?.InitAdoptedHero(newHero, context.UserName);
-
-                ActionManager.SendReply(context, $"{context.UserName} adopted {newHero.Name} ({cultureMatch.Friendly})!");
+                if (hero == null) return 0;
+                string key = hero.FirstName != null ? hero.FirstName.Raw() : null;
+                if (string.IsNullOrEmpty(key)) return 0;
+                return GetWanderers(key).Count;
             }
-            catch (Exception ex)
-            {
-                Log.Exception("AdoptByTorCommand", ex);
-                ActionManager.SendReply(context, "Something went wrong adopting that hero.");
-            }
+            catch { return 0; }
+        }
+
+        public static int CountForHero(Hero hero) => Current?.WandererCountFor(hero) ?? 0;
+
+        public static bool IsWandererStringId(string stringId)
+        {
+            if (string.IsNullOrEmpty(stringId) || Current == null) return false;
+            try { return Current.wanderers.Values.Any(list => list != null && list.Any(r => r.HeroStringId == stringId)); }
+            catch { return false; }
         }
     }
 
@@ -6347,6 +8403,673 @@ public class BLTAurasModule : MBSubModuleBase
                 Log.Exception("RebornCommand", ex);
                 return (false, "Something went wrong bringing your hero back.");
             }
+        }
+    }
+
+    [LocDescription("Manages hired Wanderer companions for your hero: hire a random one, list yours, or check status. Wanderers roll a random passive power on hire and grow their own Tier from kills/battles. Usage: !wanderer hire | list | info")]
+    public class WandererCommand : ICommandHandler
+    {
+        public class Settings { }
+        public Type HandlerConfigType => typeof(Settings);
+
+        public void Execute(ReplyContext context, object config)
+        {
+            var cfg = WandererGlobalConfig.Get();
+            if (cfg == null || !cfg.Enabled) { ActionManager.SendReply(context, "Wanderers are disabled."); return; }
+
+            var hero = BLTAdoptAHeroCampaignBehavior.Current?.GetAdoptedHero(context.UserName);
+            if (hero == null) { ActionManager.SendReply(context, "You don't have an adopted hero."); return; }
+
+            var args = (context.Args ?? "").Trim().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            string sub = args.Length > 0 ? args[0].ToLowerInvariant() : "list";
+            var behavior = BLTWandererBehavior.Current;
+            if (behavior == null) { ActionManager.SendReply(context, "Wanderer system not ready."); return; }
+            // Storage key = hero.FirstName (must match the key used at battle spawn, where only the Hero is available).
+            string ownerKey = hero.FirstName?.Raw() ?? context.UserName;
+            var entries = behavior.GetWanderers(ownerKey);
+
+            switch (sub)
+            {
+                case "hire":
+                {
+                    if (entries.Count >= cfg.MaxWanderers) { ActionManager.SendReply(context, $"You already have the maximum of {cfg.MaxWanderers} wanderers."); return; }
+                    int gold = BLTAdoptAHeroCampaignBehavior.Current?.GetHeroGold(hero) ?? 0;
+                    if (gold < cfg.HireGoldCost) { ActionManager.SendReply(context, $"Not enough BLT gold (need {cfg.HireGoldCost}, have {gold})."); return; }
+
+                    var template = CampaignHelpers.GetWandererTemplates(hero.Culture)?.SelectRandom()
+                        ?? CampaignHelpers.AllWandererTemplates.SelectRandom();
+                    if (template == null) { ActionManager.SendReply(context, "No wanderer template available."); return; }
+
+                    var newWanderer = HeroCreator.CreateSpecialHero(template);
+                    newWanderer.ChangeState(Hero.CharacterStates.Active);
+                    var targetSettlement = TaleWorlds.CampaignSystem.Settlements.Settlement.All.Where(s => s.IsTown).SelectRandom();
+                    if (targetSettlement != null) EnterSettlementAction.ApplyForCharacterOnly(newWanderer, targetSettlement);
+
+                    // A wanderer must have at least 1 skill point, or it can get killed on load (same rule as the main adopt system).
+                    if (newWanderer.GetSkillValue(CampaignHelpers.AllSkillObjects.First()) == 0)
+                        newWanderer.HeroDeveloper.SetInitialSkillLevel(CampaignHelpers.AllSkillObjects.First(), 1);
+
+                    BLTAdoptAHeroCampaignBehavior.Current?.ChangeHeroGold(hero, -cfg.HireGoldCost, true);
+                    var rec = behavior.Add(ownerKey, newWanderer);
+                    var power = WandererPowerCatalog.Pick();
+                    rec.Power = power.Id;
+                    ActionManager.SendReply(context, $"Recruited wanderer '{newWanderer.Name}' with power [{power.Display}: {power.Desc}] (you now have {entries.Count + 1}/{cfg.MaxWanderers}).");
+                    return;
+                }
+                case "list":
+                {
+                    if (entries.Count == 0) { ActionManager.SendReply(context, "You have no wanderers. Use '!wanderer hire'."); return; }
+                    ActionManager.SendReply(context, string.Join(" | ", entries.Select((e, i) =>
+                    {
+                        var pd = WandererPowerCatalog.Get(e.Record.Power);
+                        return $"{i + 1}:{e.Hero.Name}{(e.Hero.IsDead ? " (dead)" : "")} T{e.Record.Tier}{(pd.HasValue ? $" [{pd.Value.Display}]" : "")}";
+                    })));
+                    return;
+                }
+                case "fire":
+                {
+                    if (!TryIndex(args, entries, out int idx, out string err)) { ActionManager.SendReply(context, err); return; }
+                    var name = entries[idx].Hero.Name;
+                    behavior.Remove(ownerKey, entries[idx].Record);
+                    ActionManager.SendReply(context, $"Dismissed wanderer '{name}'.");
+                    return;
+                }
+                case "name":
+                {
+                    if (!TryIndex(args, entries, out int idx, out string err)) { ActionManager.SendReply(context, err); return; }
+                    if (args.Length < 3) { ActionManager.SendReply(context, "Usage: !wanderer name <number> <new name>"); return; }
+                    string newName = string.Join(" ", args.Skip(2));
+                    var wandererHero = entries[idx].Hero;
+                    wandererHero.SetName(new TaleWorlds.Localization.TextObject(newName), new TaleWorlds.Localization.TextObject(newName));
+                    ActionManager.SendReply(context, $"Wanderer {idx + 1} renamed to '{newName}'.");
+                    return;
+                }
+                case "equip":
+                {
+                    if (!TryIndex(args, entries, out int idx, out string err)) { ActionManager.SendReply(context, err); return; }
+                    if (args.Length < 3) { ActionManager.SendReply(context, "Usage: !wanderer equip <number> <item name>"); return; }
+                    string itemQuery = string.Join(" ", args.Skip(2));
+                    var custom = BLTAdoptAHeroCampaignBehavior.Current.GetCustomItems(hero);
+                    var match = custom.FirstOrDefault(e => e.Item != null
+                        && e.GetModifiedItemName().ToString().IndexOf(itemQuery, StringComparison.OrdinalIgnoreCase) >= 0);
+                    if (match.Item == null) { ActionManager.SendReply(context, $"No custom item of yours matches '{itemQuery}'. Use it in your loadout first."); return; }
+                    var wandererHero = entries[idx].Hero;
+                    var slot = SlotForItem(match.Item);
+                    // Real Hero -> real equipment, applied directly (no override abstraction needed).
+                    wandererHero.BattleEquipment[slot] = match;
+                    wandererHero.CivilianEquipment[slot] = match;
+                    ActionManager.SendReply(context, $"Wanderer {idx + 1} will use '{match.GetModifiedItemName()}' in slot {slot}.");
+                    return;
+                }
+                case "info":
+                {
+                    if (!TryIndex(args, entries, out int idx, out string err)) { ActionManager.SendReply(context, err); return; }
+                    var wandererHero = entries[idx].Hero;
+                    var slots = new[]
+                    {
+                        EquipmentIndex.Weapon0, EquipmentIndex.Weapon1, EquipmentIndex.Weapon2, EquipmentIndex.Weapon3,
+                        EquipmentIndex.Head, EquipmentIndex.Body, EquipmentIndex.Leg, EquipmentIndex.Gloves, EquipmentIndex.Cape,
+                        EquipmentIndex.Horse, EquipmentIndex.HorseHarness,
+                    };
+                    var parts = slots
+                        .Select(slot => (slot, el: wandererHero.BattleEquipment[slot]))
+                        .Where(t => !t.el.IsEmpty && t.el.Item != null)
+                        .Select(t => $"{t.slot}: {t.el.GetModifiedItemName()}");
+                    string list = string.Join(" | ", parts);
+                    var powerDef = WandererPowerCatalog.Get(entries[idx].Record.Power);
+                    string powerStr = powerDef.HasValue ? $" | Power: {powerDef.Value.Display} ({powerDef.Value.Desc})" : "";
+                    string tierStr = $" | Tier {entries[idx].Record.Tier} ({entries[idx].Record.Kills} kills, {entries[idx].Record.Battles} battles)";
+                    ActionManager.SendReply(context, string.IsNullOrEmpty(list)
+                        ? $"Wanderer {idx + 1} ({wandererHero.Name}) has no equipment.{powerStr}{tierStr}"
+                        : $"Wanderer {idx + 1} ({wandererHero.Name}): {list}{powerStr}{tierStr}");
+                    return;
+                }
+                case "skills":
+                {
+                    if (!TryIndex(args, entries, out int idx, out string err)) { ActionManager.SendReply(context, err); return; }
+                    var wandererHero = entries[idx].Hero;
+                    var combatSkills = new[]
+                    {
+                        DefaultSkills.OneHanded, DefaultSkills.TwoHanded, DefaultSkills.Polearm,
+                        DefaultSkills.Bow, DefaultSkills.Crossbow, DefaultSkills.Throwing,
+                        DefaultSkills.Riding, DefaultSkills.Athletics,
+                    };
+                    string skillList = string.Join(" | ", combatSkills
+                        .Select(s => $"{s.Name}: {wandererHero.GetSkillValue(s)}"));
+                    ActionManager.SendReply(context, $"Wanderer {idx + 1} ({wandererHero.Name}) skills: {skillList}");
+                    return;
+                }
+                default:
+                    ActionManager.SendReply(context, "Usage: !wanderer hire | list | fire <n> | name <n> <name> | equip <n> <item> | info <n> | skills <n>");
+                    return;
+            }
+        }
+
+        internal static bool TryIndex(string[] args, List<(WandererRecord Record, Hero Hero)> list, out int idx, out string err)
+        {
+            idx = -1; err = null;
+            if (args.Length < 2 || !int.TryParse(args[1], out int n) || n < 1 || n > list.Count)
+            { err = $"Specify a wanderer number 1-{list.Count}."; return false; }
+            idx = n - 1; return true;
+        }
+
+        internal static EquipmentIndex SlotForItem(ItemObject item)
+        {
+            foreach (var (slot, itemType) in SkillGroup.ArmorIndexType)
+                if (itemType == item.ItemType) return slot;
+            return EquipmentIndex.Weapon0; // weapons & shields default to primary weapon slot
+        }
+    }
+
+    public class WandererSpawnMissionBehavior : MissionBehavior
+    {
+        public WandererSpawnMissionBehavior() { BLTWandererKillTracker.Reset(); }
+
+        public override MissionBehaviorType BehaviorType => MissionBehaviorType.Other;
+        private readonly HashSet<string> spawnedFor = new HashSet<string>();
+
+        // Maps a spawned wanderer's own agent to its owner's Hero, so kills by the wanderer
+        // can reward the owner with gold (BLTAdoptAHeroCommonMissionBehavior.ApplyKillEffects
+        // is internal to BLTAdoptAHero and not reachable from this assembly, so we track kills
+        // ourselves via OnAgentRemoved instead).
+        private readonly Dictionary<Agent, Hero> wandererAgentToOwner = new Dictionary<Agent, Hero>();
+
+        // Maps a spawned wanderer's own agent to the WANDERER's own Hero (as opposed to
+        // wandererAgentToOwner, which maps to the OWNER's Hero) - needed for self-progression
+        // (crediting kills to the correct wanderer's own Kills/Battles/Tier) and for the
+        // battle/permanent death-chance system, both keyed off the wanderer itself.
+        private readonly Dictionary<Agent, Hero> wandererAgentToHero = new Dictionary<Agent, Hero>();
+
+        // Wanderers that actually spawned into THIS mission, tracked so we can credit a Battle
+        // (and roll Tier) for them at mission end, keyed by (ownerKey, wanderer StringId).
+        private readonly HashSet<(string ownerKey, string wandererStringId)> spawnedThisMission = new HashSet<(string, string)>();
+
+        // Kills THIS mission per wanderer, keyed by the wanderer Hero's StringId (survives even if
+        // the wanderer's agent dies, unlike keying off Agent). Reset per mission implicitly since
+        // this whole behavior is recreated each mission.
+        private readonly Dictionary<string, int> wandererKillCounts = new Dictionary<string, int>();
+
+        // Power bookkeeping - keyed off the wanderer's OWN spawned agent (not the owner's).
+        private readonly Dictionary<Agent, string> wandererAgentPower = new Dictionary<Agent, string>();
+        private readonly HashSet<Agent> secondWindUsed = new HashSet<Agent>();
+        private readonly HashSet<Agent> berserkActive = new HashSet<Agent>();
+        private readonly Dictionary<Agent, float> battleCryNextPulse = new Dictionary<Agent, float>();
+
+        // Deferred-spawn queue: OnAgentCreated only QUEUES; the actual spawn happens on a later
+        // OnMissionTick once the owner agent is fully built (team/formation/observer wiring ready).
+        private class PendingSpawn
+        {
+            public Agent OwnerAgent;
+            public Hero Owner;
+            public Hero Wanderer;
+            public WandererRecord Record;
+        }
+        private readonly List<PendingSpawn> pending = new List<PendingSpawn>();
+
+        // Permanent Death Chance revival queue: spawning a fresh Hero must never happen mid-dispatch
+        // (see the Necromancy crash fix - SpawnTroop-adjacent engine calls inside OnAgentRemoved
+        // corrupt the engine's own agent-list enumeration), so a "wanderer comes back" decision made
+        // in OnAgentRemoved is only QUEUED here; the actual HeroCreator.CreateSpecialHero call happens
+        // on the next OnMissionTick.
+        private class PendingRevive
+        {
+            public WandererRecord Record;
+            public Hero DeadHero;
+        }
+        private readonly List<PendingRevive> pendingRevives = new List<PendingRevive>();
+
+        public override void OnAgentRemoved(Agent affectedAgent, Agent affectorAgent, AgentState agentState, KillingBlow blow)
+        {
+            try
+            {
+                if (wandererAgentToOwner.Count > 0 && affectedAgent != null)
+                {
+                    Log.Info($"[Wanderer] OnAgentRemoved: affected={affectedAgent.Name} state={agentState} affector={affectorAgent?.Name ?? "null"} isTrackedWanderer={(affectorAgent != null && wandererAgentToOwner.ContainsKey(affectorAgent))}");
+                }
+
+                // Credit a kill to the wanderer's OWN kill counter (self-progression), independent
+                // of the owner-gold-reward logic further down.
+                if (agentState == AgentState.Killed && affectorAgent != null
+                    && wandererAgentToHero.TryGetValue(affectorAgent, out var killerWandererHero) && killerWandererHero != null)
+                {
+                    wandererKillCounts.TryGetValue(killerWandererHero.StringId, out int killCur);
+                    wandererKillCounts[killerWandererHero.StringId] = killCur + 1;
+                }
+
+                // Permanent Death Chance: only relevant when the REMOVED agent is itself a tracked
+                // wanderer that actually died (Battle Death Chance in OnAgentHit already gave it a
+                // chance to survive the hit entirely - reaching here means that roll failed).
+                if (affectedAgent != null && agentState == AgentState.Killed
+                    && wandererAgentToHero.TryGetValue(affectedAgent, out var deadWandererHero) && deadWandererHero != null)
+                {
+                    var record = BLTWandererBehavior.Current?.FindRecordByHeroStringId(deadWandererHero.StringId);
+                    if (record != null)
+                    {
+                        var deathCfg = WandererGlobalConfig.Get();
+                        float permanentChance = deathCfg?.PermanentDeathChancePercent ?? 100f;
+                        if (MBRandom.RandomFloat * 100f < permanentChance)
+                        {
+                            // Permanent: the Hero itself still dies normally through the campaign's
+                            // own death resolution - we only reset OUR tracked progress.
+                            record.Kills = 0;
+                            record.Battles = 0;
+                            record.Tier = 1;
+                        }
+                        else
+                        {
+                            pendingRevives.Add(new PendingRevive { Record = record, DeadHero = deadWandererHero });
+                        }
+                    }
+                }
+
+                if (affectorAgent == null || agentState != AgentState.Killed) return;
+                if (!wandererAgentToOwner.TryGetValue(affectorAgent, out var ownerHero) || ownerHero == null) return;
+                BLTWandererKillTracker.Add(ownerHero);
+                var cfg = WandererGlobalConfig.Get();
+                Log.Info($"[Wanderer] Kill by wanderer detected! owner={ownerHero.Name} GoldPerKill={cfg?.GoldPerKill}");
+
+                if (wandererAgentPower.TryGetValue(affectorAgent, out var power) && affectorAgent.IsActive())
+                {
+                    try
+                    {
+                        switch (power)
+                        {
+                            case "Vampirism":
+                                if (affectorAgent.HealthLimit > 0f)
+                                    affectorAgent.Health = Math.Min(affectorAgent.HealthLimit, affectorAgent.Health + affectorAgent.HealthLimit * 0.20f * GetWandererPowerScale(affectorAgent));
+                                break;
+                            case "Bloodrage":
+                            {
+                                float bloodrageBonus = 30f * GetWandererPowerScale(affectorAgent);
+                                var buffCfg = new AgentModifierConfig();
+                                buffCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.SwingSpeedMultiplier, ModifierPercent = 100f + bloodrageBonus });
+                                BLTTimedBuffBehavior.AddTimedBuff(affectorAgent, buffCfg, 8f);
+                                break;
+                            }
+                        }
+                    }
+                    catch (Exception ex) { Log.Exception("WandererSpawnMissionBehavior.OnAgentRemoved.PowerKill", ex); }
+                }
+
+                if (cfg == null || cfg.GoldPerKill <= 0) return;
+                BLTAdoptAHeroCampaignBehavior.Current?.ChangeHeroGold(ownerHero, cfg.GoldPerKill, true);
+                Log.ShowInformation($"+{cfg.GoldPerKill} gold ({ownerHero.FirstName}'s wanderer got a kill)", ownerHero.CharacterObject);
+            }
+            catch (Exception ex) { Log.Exception("WandererSpawnMissionBehavior.OnAgentRemoved", ex); }
+        }
+
+        public override void OnAgentHit(Agent affectedAgent, Agent affectorAgent, in MissionWeapon affectorWeapon,
+            in Blow blow, in AttackCollisionData attackCollisionData)
+        {
+            try
+            {
+                if (affectedAgent == null || !affectedAgent.IsActive()) return;
+
+                // Battle Death Chance: applies to ANY tracked wanderer (independent of its rolled
+                // power). When a hit would drop its HP to/below 0, roll BattleDeathChancePercent.
+                // On failure (the common case at the low default), clamp HP to a small positive
+                // value instead of letting the hit be lethal - same "survive at low HP" pattern
+                // used by Second Wind just below, but unconditional on power.
+                if (wandererAgentToHero.ContainsKey(affectedAgent) && affectedAgent.Health <= 0f)
+                {
+                    var deathCfg = WandererGlobalConfig.Get();
+                    float battleDeathChance = deathCfg?.BattleDeathChancePercent ?? 3f;
+                    if (MBRandom.RandomFloat * 100f >= battleDeathChance)
+                    {
+                        affectedAgent.Health = Math.Max(1f, affectedAgent.HealthLimit * 0.01f);
+                    }
+                }
+
+                if (!wandererAgentPower.TryGetValue(affectedAgent, out var power) || power != "SecondWind") return;
+                if (secondWindUsed.Contains(affectedAgent)) return;
+                if (affectedAgent.HealthLimit <= 0f) return;
+                float hpPct = affectedAgent.Health / affectedAgent.HealthLimit * 100f;
+                if (hpPct > 25f) return;
+
+                secondWindUsed.Add(affectedAgent);
+                float healFraction = Math.Min(1f, 0.6f * GetWandererPowerScale(affectedAgent));
+                affectedAgent.Health = Math.Min(affectedAgent.HealthLimit, affectedAgent.HealthLimit * healFraction);
+                var buffCfg = new AgentModifierConfig();
+                buffCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.MaxSpeedMultiplier, ModifierPercent = 130f });
+                buffCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.SwingSpeedMultiplier, ModifierPercent = 120f });
+                BLTTimedBuffBehavior.AddTimedBuff(affectedAgent, buffCfg, 5f);
+            }
+            catch (Exception ex) { Log.Exception("WandererSpawnMissionBehavior.OnAgentHit", ex); }
+        }
+
+        public override void OnAgentCreated(Agent agent)
+        {
+            try
+            {
+                var cfg = WandererGlobalConfig.Get();
+                if (cfg == null || !cfg.Enabled) { return; }
+                // Only spawn in actual combat missions (skip conversations, menus, character viewer, town walk-arounds).
+                var mission = Mission.Current;
+                if (mission == null || mission.CombatType == Mission.MissionCombatType.NoCombat) { return; }
+                var hero = agent.GetAdoptedHero();
+                if (hero == null) return; // fires for many non-hero agents
+                var behavior = BLTWandererBehavior.Current;
+                if (behavior == null) { return; }
+
+                // Storage key resolved via hero.FirstName (matches the key used at hire time in WandererCommand).
+                string ownerKey = hero.FirstName?.Raw();
+                if (string.IsNullOrEmpty(ownerKey)) { return; }
+                if (!spawnedFor.Add(ownerKey)) { return; }
+
+                foreach (var (record, wandererHero) in behavior.GetWanderers(ownerKey))
+                {
+                    if (wandererHero == null || wandererHero.IsDead) continue;
+                    UpgradeWandererEquipment(wandererHero, record?.Tier ?? 1);
+                    spawnedThisMission.Add((ownerKey, wandererHero.StringId));
+                    pending.Add(new PendingSpawn { OwnerAgent = agent, Owner = hero, Wanderer = wandererHero, Record = record });
+                }
+            }
+            catch (Exception ex) { Log.Exception("WandererSpawnMissionBehavior.OnAgentCreated", ex); }
+        }
+
+        // Applies this mission's accumulated kills/battle-count to every wanderer that spawned into
+        // it, and recomputes their Tier. Dead wanderers are skipped here - their progress reset (or
+        // preservation via revival) is handled separately by the death-chance logic in OnAgentRemoved.
+        protected override void OnEndMission()
+        {
+            try
+            {
+                var cfg = WandererGlobalConfig.Get();
+                var behavior = BLTWandererBehavior.Current;
+                if (cfg == null || behavior == null) return;
+
+                foreach (var (ownerKey, wandererStringId) in spawnedThisMission)
+                {
+                    var entries = behavior.GetWanderers(ownerKey);
+                    var match = entries.FirstOrDefault(e => e.Hero?.StringId == wandererStringId);
+                    if (match.Record == null || match.Hero == null || match.Hero.IsDead) continue;
+
+                    int wandererKillsThisMission = wandererKillCounts.TryGetValue(match.Hero.StringId, out int k) ? k : 0;
+                    match.Record.Kills += wandererKillsThisMission;
+                    match.Record.Battles += 1;
+                    match.Record.Tier = WandererTierCalculator.ComputeTier(match.Record.Kills, match.Record.Battles, cfg);
+                }
+            }
+            catch (Exception ex) { Log.Exception("WandererSpawnMissionBehavior.OnEndMission", ex); }
+        }
+
+        public override void OnMissionTick(float dt)
+        {
+            base.OnMissionTick(dt);
+            if (pending.Count > 0)
+            {
+                try
+                {
+                    // Spawn only owners that are fully built this tick. Re-queue (leave) the rest.
+                    for (int i = pending.Count - 1; i >= 0; i--)
+                    {
+                        var p = pending[i];
+                        var owner = p.OwnerAgent;
+                        // Owner must be live and wired (team + formation) before we spawn next to it.
+                        bool ready = owner != null && owner.IsActive() && owner.Team != null && owner.Formation != null;
+                        if (!ready)
+                        {
+                            // If the owner agent died/was removed before becoming ready, drop it.
+                            if (owner == null || (!owner.IsActive() && owner.Health <= 0f))
+                            {
+                                pending.RemoveAt(i);
+                            }
+                            continue; // wait another tick
+                        }
+                        pending.RemoveAt(i);
+                        SpawnWanderer(owner, p.Owner, p.Wanderer, p.Record);
+                    }
+                }
+                catch (Exception ex) { Log.Exception("WandererSpawnMissionBehavior.OnMissionTick", ex); }
+            }
+
+            if (pendingRevives.Count > 0)
+            {
+                try
+                {
+                    foreach (var r in pendingRevives)
+                    {
+                        try
+                        {
+                            var template = CampaignHelpers.GetWandererTemplates(r.DeadHero.Culture)?.SelectRandom()
+                                        ?? CampaignHelpers.AllWandererTemplates.SelectRandom();
+                            if (template == null) continue;
+
+                            var revived = HeroCreator.CreateSpecialHero(template);
+                            revived.ChangeState(Hero.CharacterStates.Active);
+                            var targetSettlement = TaleWorlds.CampaignSystem.Settlements.Settlement.All.Where(s => s.IsTown).SelectRandom();
+                            if (targetSettlement != null) EnterSettlementAction.ApplyForCharacterOnly(revived, targetSettlement);
+                            if (revived.GetSkillValue(CampaignHelpers.AllSkillObjects.First()) == 0)
+                                revived.HeroDeveloper.SetInitialSkillLevel(CampaignHelpers.AllSkillObjects.First(), 1);
+
+                            // Copy equipment directly (Kills/Battles/Tier already live on the Record,
+                            // which we keep unchanged - only HeroStringId needs to point at the new Hero).
+                            for (var idx = EquipmentIndex.Weapon0; idx < EquipmentIndex.NumEquipmentSetSlots; idx++)
+                            {
+                                revived.BattleEquipment[idx] = r.DeadHero.BattleEquipment[idx];
+                                revived.CivilianEquipment[idx] = r.DeadHero.CivilianEquipment[idx];
+                            }
+
+                            r.Record.HeroStringId = revived.StringId;
+                            Log.ShowInformation($"A wanderer cheats death and returns, remembering everything!", revived.CharacterObject);
+                        }
+                        catch (Exception ex) { Log.Exception("WandererSpawnMissionBehavior.ProcessPendingRevive", ex); }
+                    }
+                    pendingRevives.Clear();
+                }
+                catch (Exception ex) { Log.Exception("WandererSpawnMissionBehavior.OnMissionTick.Revives", ex); }
+            }
+
+            if (wandererAgentPower.Count > 0)
+            {
+                try
+                {
+                    float now = Mission.Current?.CurrentTime ?? 0f;
+                    foreach (var kv in wandererAgentPower.ToList())
+                    {
+                        var agent = kv.Key;
+                        var power = kv.Value;
+                        if (agent == null || !agent.IsActive()) { wandererAgentPower.Remove(agent); continue; }
+                        switch (power)
+                        {
+                            case "Juggernaut":
+                                if (agent.HealthLimit > 0f)
+                                    agent.Health = Math.Min(agent.HealthLimit, agent.Health + 0.5f * GetWandererPowerScale(agent) * dt);
+                                break;
+                            case "Berserk":
+                            {
+                                if (agent.HealthLimit <= 0f) break;
+                                float hpPct = agent.Health / agent.HealthLimit * 100f;
+                                bool shouldBeActive = hpPct <= 50f;
+                                bool isActive = berserkActive.Contains(agent);
+                                float berserkBonus = 40f * GetWandererPowerScale(agent);
+                                if (shouldBeActive && !isActive)
+                                {
+                                    var buffCfg = new AgentModifierConfig();
+                                    buffCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.SwingSpeedMultiplier, ModifierPercent = 100f + berserkBonus });
+                                    buffCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.MaxSpeedMultiplier, ModifierPercent = 100f + berserkBonus });
+                                    BLTAgentModifierBehavior.Current?.Add(agent, buffCfg);
+                                    berserkActive.Add(agent);
+                                }
+                                else if (!shouldBeActive && isActive)
+                                {
+                                    var negCfg = new AgentModifierConfig();
+                                    negCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.SwingSpeedMultiplier, ModifierPercent = 10000f / (100f + berserkBonus) });
+                                    negCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.MaxSpeedMultiplier, ModifierPercent = 10000f / (100f + berserkBonus) });
+                                    BLTAgentModifierBehavior.Current?.Add(agent, negCfg);
+                                    berserkActive.Remove(agent);
+                                }
+                                break;
+                            }
+                            case "BattleCry":
+                            {
+                                if (!battleCryNextPulse.TryGetValue(agent, out var next))
+                                {
+                                    battleCryNextPulse[agent] = now + 25f;
+                                    break;
+                                }
+                                if (now >= next)
+                                {
+                                    battleCryNextPulse[agent] = now + 25f;
+                                    float battleCryBonus = 25f * GetWandererPowerScale(agent);
+                                    var buffCfg = new AgentModifierConfig();
+                                    buffCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.SwingSpeedMultiplier, ModifierPercent = 100f + battleCryBonus });
+                                    buffCfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.MaxSpeedMultiplier, ModifierPercent = 100f + battleCryBonus });
+                                    BLTTimedBuffBehavior.AddTimedBuff(agent, buffCfg, 6f);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex) { Log.Exception("WandererSpawnMissionBehavior.PowerTick", ex); }
+            }
+        }
+
+        // Resolves the current Tier-based magnitude scale for a wanderer's own spawned agent.
+        // Returns 1.0 (no scaling) if the agent/record can't be resolved, so this never throws
+        // and never blocks a power from firing at its base strength.
+        private float GetWandererPowerScale(Agent wandererAgent)
+        {
+            try
+            {
+                if (wandererAgent == null) return 1f;
+                if (!wandererAgentToHero.TryGetValue(wandererAgent, out var wandererHero) || wandererHero == null) return 1f;
+                var record = BLTWandererBehavior.Current?.FindRecordByHeroStringId(wandererHero.StringId);
+                return record != null ? WandererPowerScaling.MagnitudeScale(record.Tier) : 1f;
+            }
+            catch { return 1f; }
+        }
+
+        // A wanderer is a REAL Hero, so its own CharacterObject already reflects its real
+        // equipment/skills/appearance - no reflection-built mirror character needed at all.
+        // Upgrades the wanderer's own equipment to match its own Tier (1-8, from self-progression),
+        // independent of the owner's gear. For each slot the wanderer already has something equipped
+        // in, looks up another item of the SAME ItemType at the wanderer's OWN Tier and equips that
+        // instead (never downgrades - if the current item is already at or above the target tier,
+        // that slot is left alone). Runs once at hire/spawn and again whenever Tier increases.
+        private static void UpgradeWandererEquipment(Hero wanderer, int tier)
+        {
+            try
+            {
+                for (var idx = EquipmentIndex.Weapon0; idx < EquipmentIndex.NumEquipmentSetSlots; idx++)
+                {
+                    var current = wanderer.BattleEquipment[idx];
+                    if (current.IsEmpty || current.Item == null) continue;
+                    if ((int)current.Item.Tier >= tier) continue; // already at or above target (ItemTiers is an enum, compare as int)
+
+                    var upgraded = TaleWorlds.ObjectSystem.MBObjectManager.Instance
+                        .GetObjectTypeList<ItemObject>()
+                        .Where(i => i.ItemType == current.Item.ItemType && (int)i.Tier == tier)
+                        .ToList()
+                        .SelectRandom();
+                    if (upgraded == null) continue;
+
+                    var element = new EquipmentElement(upgraded);
+                    wanderer.BattleEquipment[idx] = element;
+                    wanderer.CivilianEquipment[idx] = element;
+                }
+            }
+            catch (Exception ex) { Log.Exception("UpgradeWandererEquipment", ex); }
+        }
+
+        private void SpawnWanderer(Agent ownerAgent, Hero owner, Hero wanderer, WandererRecord record)
+        {
+            try
+            {
+                bool mounted = !wanderer.BattleEquipment[EquipmentIndex.Horse].IsEmpty;
+                var playerTeam = Mission.Current.PlayerTeam;
+                bool onPlayerSide = ownerAgent.Team != null && playerTeam != null && ownerAgent.Team.Side == playerTeam.Side;
+
+                // Resolve a non-null PartyBase for PartyAgentOrigin. Adopted/summoned BLT heroes
+                // usually have NO PartyBelongedTo (they are reinforcements, not party leaders), so
+                // mirror BLTSummonBehavior/SummonHero: reuse the owner agent's origin party, else
+                // fall back to MainParty on the player side / an enemy combatant party.
+                PartyBase party = ownerAgent.Origin is TaleWorlds.CampaignSystem.AgentOrigins.PartyAgentOrigin pao ? pao.Party : null;
+                if (party == null && ownerAgent.Origin?.BattleCombatant is PartyBase pbc)
+                    party = pbc;
+                if (party == null && onPlayerSide)
+                    party = PartyBase.MainParty;
+                if (party == null && ownerAgent.Team != null)
+                {
+                    foreach (var a in ownerAgent.Team.TeamAgents)
+                    {
+                        if (a?.Origin?.BattleCombatant is PartyBase ep) { party = ep; break; }
+                    }
+                }
+                if (party == null) { return; }
+
+                Vec3? spawnPos = ownerAgent.Position;
+                Vec2? spawnDir = ownerAgent.GetMovementDirection();
+                Agent agent = Mission.Current.SpawnTroop(
+                    new TaleWorlds.CampaignSystem.AgentOrigins.PartyAgentOrigin(party, wanderer.CharacterObject)
+                    , isPlayerSide: onPlayerSide
+                    , hasFormation: true
+                    , spawnWithHorse: mounted
+                    , isReinforcement: false
+                    , formationTroopCount: 1
+                    , formationTroopIndex: 0
+                    , isAlarmed: true
+                    , wieldInitialWeapons: true
+                    , forceDismounted: false
+                    , initialPosition: spawnPos
+                    , initialDirection: spawnDir
+                );
+                if (agent == null) { return; }
+                wandererAgentToOwner[agent] = owner;
+                wandererAgentToHero[agent] = wanderer;
+                Log.Info($"[Wanderer] Spawned {wanderer.Name} for owner {owner.Name}, tracking agent {agent.Name} for kill-gold.");
+
+                if (record != null)
+                {
+                    if (string.IsNullOrEmpty(record.Power))
+                        record.Power = WandererPowerCatalog.Pick().Id; // lazy-assign for wanderers hired before this feature existed
+                    wandererAgentPower[agent] = record.Power;
+                    try
+                    {
+                        float onSpawnScale = WandererPowerScaling.MagnitudeScale(record.Tier);
+                        switch (record.Power)
+                        {
+                            case "IronSkin":
+                            {
+                                float ironSkinBonus = 25f * onSpawnScale;
+                                var cfg = new AgentModifierConfig();
+                                cfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.ArmorHead, ModifierPercent = 100f + ironSkinBonus });
+                                BLTAgentModifierBehavior.Current?.Add(agent, cfg);
+                                break;
+                            }
+                            case "SwiftHunter":
+                            {
+                                float swiftBonus = 20f * onSpawnScale;
+                                var cfg = new AgentModifierConfig();
+                                cfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.MaxSpeedMultiplier, ModifierPercent = 100f + swiftBonus });
+                                cfg.Properties.Add(new PropertyModifierDef { Name = DrivenProperty.CombatMaxSpeedMultiplier, ModifierPercent = 100f + swiftBonus });
+                                BLTAgentModifierBehavior.Current?.Add(agent, cfg);
+                                break;
+                            }
+                        }
+                    }
+                    catch (Exception ex) { Log.Exception("WandererSpawnMissionBehavior.ApplyOnSpawnPower", ex); }
+                }
+
+                if (ownerAgent.Team != null && agent.Team != ownerAgent.Team)
+                {
+                    agent.SetTeam(ownerAgent.Team, true);
+                }
+                if (ownerAgent.Formation != null)
+                {
+                    agent.Formation = ownerAgent.Formation;
+                }
+
+                // Nudge right next to the owner so it is clearly visible fighting alongside them.
+                try
+                {
+                    if (ownerAgent.IsActive())
+                        agent.TeleportToPosition(ownerAgent.Position);
+                }
+                catch (Exception ex) { Log.Exception("WandererSpawnMissionBehavior.Reposition", ex); }
+            }
+            catch (Exception ex) { Log.Exception("WandererSpawnMissionBehavior.SpawnWanderer", ex); }
         }
     }
 
@@ -6563,6 +9286,95 @@ public class BLTAurasModule : MBSubModuleBase
         }
     }
 
+    // Tracks kills made by a viewer's wanderer(s) during the current mission (resets each battle,
+    // same lifecycle as BLTDamageTracker), so the count can be shown on the hero bar/overlay.
+    public static class BLTWandererKillTracker
+    {
+        private static readonly Dictionary<Hero, int> kills = new Dictionary<Hero, int>();
+        public static void Reset() { kills.Clear(); }
+        public static void Add(Hero owner)
+        {
+            if (owner == null) return;
+            int cur;
+            kills.TryGetValue(owner, out cur);
+            kills[owner] = cur + 1;
+        }
+        public static int Get(Hero owner)
+        {
+            if (owner == null) return 0;
+            int v;
+            return kills.TryGetValue(owner, out v) ? v : 0;
+        }
+    }
+
+    // Computes a wanderer's Tier (1-8) from its lifetime Kills/Battles against the configured
+    // per-tier thresholds. A tier is reached when EITHER the kill OR the battle threshold for it
+    // is met (same kills-OR-battles pattern as PowerProgression for hero powers).
+    public static class WandererTierCalculator
+    {
+        public static int ComputeTier(int kills, int battles, WandererGlobalConfig cfg)
+        {
+            var killThresholds = ParseCsv(cfg?.TierKillThresholds);
+            var battleThresholds = ParseCsv(cfg?.TierBattleThresholds);
+            int tier = 1;
+            for (int i = 0; i < killThresholds.Count && i < battleThresholds.Count; i++)
+            {
+                if (kills >= killThresholds[i] || battles >= battleThresholds[i])
+                    tier = i + 2; // thresholds[0] is the requirement for tier 2, etc.
+                else
+                    break;
+            }
+            return Math.Min(8, Math.Max(1, tier));
+        }
+
+        private static List<int> ParseCsv(string csv)
+        {
+            var result = new List<int>();
+            if (string.IsNullOrWhiteSpace(csv)) return result;
+            foreach (var part in csv.Split(','))
+                if (int.TryParse(part.Trim(), out int v)) result.Add(v);
+            return result;
+        }
+    }
+
+    // +15% magnitude per tier above 1 (Tier 1 = 1.0x, Tier 8 = 2.05x), used to scale the 8
+    // hand-rolled wanderer powers by the wanderer's own progression Tier.
+    public static class WandererPowerScaling
+    {
+        public static float MagnitudeScale(int tier) => 1f + Math.Max(0, tier - 1) * 0.15f;
+    }
+
+    public class WandererGlobalConfig
+    {
+        private const string ID = "MBGA - Wanderers";
+        internal static void Register() => ActionManager.RegisterGlobalConfigType(ID, typeof(WandererGlobalConfig));
+        internal static WandererGlobalConfig Get() => ActionManager.GetGlobalConfig<WandererGlobalConfig>(ID);
+
+        [DisplayName("Enabled"), Description("Master switch for the wanderer companion system"), UsedImplicitly]
+        public bool Enabled { get; set; } = true;
+
+        [DisplayName("Hire Gold Cost"), Description("Gold to recruit one wanderer"), UsedImplicitly]
+        public int HireGoldCost { get; set; } = 5000;
+
+        [DisplayName("Max Wanderers"), Description("Maximum wanderers per hero"), UsedImplicitly]
+        public int MaxWanderers { get; set; } = 1;
+
+        [DisplayName("Gold Per Kill"), Description("Gold awarded to the owner (viewer) each time their wanderer kills an enemy. Set to 0 to disable."), UsedImplicitly]
+        public int GoldPerKill { get; set; } = 300;
+
+        [DisplayName("Tier Kill Thresholds"), Description("Comma-separated kills required to reach tier 2,3,4,5,6,7,8 (7 numbers). A wanderer reaches a tier when its kills OR battles meet that tier's threshold."), UsedImplicitly]
+        public string TierKillThresholds { get; set; } = "5,12,22,35,50,70,95";
+
+        [DisplayName("Tier Battle Thresholds"), Description("Comma-separated battles required to reach tier 2,3,4,5,6,7,8 (7 numbers)."), UsedImplicitly]
+        public string TierBattleThresholds { get; set; } = "3,7,12,18,25,33,42";
+
+        [DisplayName("Battle Death Chance (%)"), Description("Chance a killing blow actually kills the wanderer in this battle. Low by default - most 'fatal' hits are survived."), UsedImplicitly]
+        public float BattleDeathChancePercent { get; set; } = 3f;
+
+        [DisplayName("Permanent Death Chance (%)"), Description("Only rolled if Battle Death Chance already resulted in death. 100% = any real death is permanent (today's behavior). Lower this to let a wanderer sometimes come back with its Kills/Battles/Tier intact."), UsedImplicitly]
+        public float PermanentDeathChancePercent { get; set; } = 100f;
+    }
+
     public class AdrenalineGlobalConfig
     {
         private const string ID = "MBGA - Adrenaline";
@@ -6600,7 +9412,135 @@ public class BLTAurasModule : MBSubModuleBase
         public float MountedChargeDamageMultiplier { get; set; } = 3f;
     }
 
+    [DisplayName("MBGA - Hero Bar")]
+    public class HeroBarGlobalConfig
+    {
+        private const string ID = "MBGA - Hero Bar";
+        internal static void Register() => ActionManager.RegisterGlobalConfigType(ID, typeof(HeroBarGlobalConfig));
+        internal static HeroBarGlobalConfig Get() => ActionManager.GetGlobalConfig<HeroBarGlobalConfig>(ID);
 
+        [DisplayName("1. Overlay On/Off (OBS Browser Source)"),
+         Description("MASTER SWITCH for the browser-based hero overlay you add as an OBS Browser Source. Turn OFF to hide it completely, no matter what the settings below say. Does NOT affect the in-game nameplate above heroes' heads - that one always shows if the mod is running."),
+         PropertyOrder(1), UsedImplicitly]
+        public bool ShowMissionOverlay { get; set; } = true;
+
+        [DisplayName("2. Bar Style: New vs Old 5.2.4"),
+         Description("CHECKED = new redesigned bar (class level dots, extra stats, colored adrenaline/power bars). UNCHECKED = the original simple BLT 5.2.4 look (in-game: just the hero's name; overlay: circular cooldown ring, plain-text Kills/Gold/XP, no level dots). Affects BOTH the in-game nameplate AND the browser overlay. Takes effect on the next mission load."),
+         PropertyOrder(2), UsedImplicitly]
+        public bool UseNewHeroBarLayout { get; set; } = true;
+
+        [DisplayName("3. In-Game Side Bars (New Style only)"),
+         Description("Only matters when setting 2 (New Style) is checked, and only affects the IN-GAME 3D nameplate above heroes' heads (not the browser overlay, which always shows its own side bars in New Style). Shows/hides the colored adrenaline (left) and power (right) bars next to the name. Takes effect on the next mission load."),
+         PropertyOrder(3), UsedImplicitly]
+        public bool ShowSideBars { get; set; } = true;
+    }
+
+    internal static class EquipCultureRestrictionPatch
+    {
+        internal static System.Reflection.MethodBase TargetMethod()
+        {
+            var type = typeof(BLTAdoptAHeroCampaignBehavior).Assembly.GetTypes()
+                .FirstOrDefault(t => t.Name == "EquipHero");
+            return type?.GetMethod("FindRandomTieredEquipment",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+        }
+
+        // Prefix na EquipHero.FindRandomTieredEquipment — wymusza kulture bohatera przez parametry.
+        // (EquipHero jest internal, wiec nie siegamy do jego helperow — tylko podmieniamy parametry,
+        //  reszte robi oryginalna metoda: filtr item.Culture==kultura + wybor tieru w tej kulturze.)
+        internal static void Prefix(Hero hero, ref CultureObject cultureFilter, ref bool cultureFilterSpecified)
+        {
+            try
+            {
+                var cfg = EquipCultureGlobalConfig.Get();
+                if (cfg == null || !cfg.Enabled) return;             // standard BLT
+                if (hero?.Culture == null) return;                   // brak kultury → standard
+                cultureFilter = hero.Culture;                        // wymus kulture bohatera
+                cultureFilterSpecified = true;                       // ... i nigdy nie odpuszczaj (brak obcej kultury)
+            }
+            catch (Exception e) { Log.Exception("[EquipCulture] Prefix", e); }
+        }
+    }
+
+    // !discard w oryginalnym DLL nie ma ani ostrzezenia przed skasowaniem zalozonego przedmiotu, ani
+    // refundu - fork dodaje obie rzeczy, ale refund liczy z BLTCustomItemsCampaignBehavior.PurchaseCost,
+    // pola ktorego NIE MA w oryginalnym DLL (rzucilby MissingFieldException gdyby wywolane). Wlasna
+    // reimplementacja: ten sam equipped-item guard (+ "force" do obejscia), ale refund to plaska,
+    // konfigurowalna kwota zamiast prawdziwego 1/8 kosztu (ktorego nie da sie odczytac z zewnatrz).
+    public class MBGADiscardRefundConfig
+    {
+        private const string ID = "MBGA - Discard Refund";
+        internal static void Register() => ActionManager.RegisterGlobalConfigType(ID, typeof(MBGADiscardRefundConfig));
+        internal static MBGADiscardRefundConfig Get() => ActionManager.GetGlobalConfig<MBGADiscardRefundConfig>(ID);
+
+        [DisplayName("Enabled"), Description("Guard against accidentally discarding an equipped custom item (require \"!discard <index> force\" to confirm) and refund a flat amount of gold on discard. Standalone re-implementation for an UNMODIFIED BLTAdoptAHero.dll - off by default, leave disabled if running the MesmerTurn fork, which already has this (and a more accurate, cost-based refund)."), UsedImplicitly]
+        public bool Enabled { get; set; } = false;
+
+        [DisplayName("Flat Refund"), Description("Flat gold refunded per discarded custom item. The fork refunds 1/8th of the tracked purchase cost, but that cost isn't readable from outside - this is a flat approximation instead."), UsedImplicitly]
+        public int FlatRefund { get; set; } = 1000;
+    }
+
+    [HarmonyPatch]
+    internal static class DiscardItemGuardPatch
+    {
+        internal static System.Reflection.MethodBase TargetMethod()
+            => typeof(DiscardItem).GetMethod("ExecuteInternal",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+        [HarmonyPrefix]
+        private static bool Prefix(Hero adoptedHero, ReplyContext context, object config,
+            Action<string> onSuccess, Action<string> onFailure)
+        {
+            try
+            {
+                var cfg = MBGADiscardRefundConfig.Get();
+                if (cfg == null || !cfg.Enabled) return true; // standard BLT behavior
+
+                if (string.IsNullOrWhiteSpace(context.Args))
+                {
+                    onFailure(context.ArgsErrorMessage("(custom item index)"));
+                    return false;
+                }
+
+                var argParts = context.Args.Trim().Split(' ');
+                bool force = argParts.Length > 1 && argParts[1].Equals("force", StringComparison.OrdinalIgnoreCase);
+
+                (var element, string error) = BLTAdoptAHeroCampaignBehavior.Current.FindCustomItemByIndex(adoptedHero, argParts[0]);
+                if (element.IsEqualTo(EquipmentElement.Invalid))
+                {
+                    onFailure(error ?? "(unknown error)");
+                    return false;
+                }
+
+                bool isEquipped = adoptedHero.BattleEquipment.YieldFilledEquipmentSlots().Any(e => e.element.IsEqualTo(element))
+                                || adoptedHero.CivilianEquipment.YieldFilledEquipmentSlots().Any(e => e.element.IsEqualTo(element));
+                if (isEquipped && !force)
+                {
+                    onFailure($"'{RewardHelpers.GetItemNameAndModifiers(element)}' is currently equipped - equip something else in that slot first, or use \"!discard {argParts[0]} force\" to discard it anyway.");
+                    return false;
+                }
+
+                BLTAdoptAHeroCampaignBehavior.Current.DiscardCustomItem(adoptedHero, element);
+
+                if (cfg.FlatRefund > 0)
+                {
+                    BLTAdoptAHeroCampaignBehavior.Current.ChangeHeroGold(adoptedHero, cfg.FlatRefund);
+                    onSuccess($"'{RewardHelpers.GetItemNameAndModifiers(element)}' was discarded (+{cfg.FlatRefund} gold)");
+                }
+                else
+                {
+                    onSuccess($"'{RewardHelpers.GetItemNameAndModifiers(element)}' was discarded");
+                }
+
+                return false; // skip original
+            }
+            catch (Exception ex)
+            {
+                Log.Exception("DiscardItemGuardPatch.Prefix failed", ex);
+                return true; // fall back to original on error
+            }
+        }
+    }
 
 }
 
